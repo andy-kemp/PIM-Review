@@ -1,0 +1,24 @@
+{
+  "OutputFolder": "./Output",
+  "IncludeTransitiveMembers": false,
+  "IncludeApprovalHistory": true,
+  "IncludeLicenseDetails": true,
+  "IncludePimForGroups": true,
+  "InstallImportExcelIfMissing": false,
+  "PromptToInstallImportExcel": false,
+  "LongActivationThresholdHours": 8,
+  "HighImpactRoles": [
+    "Global Administrator",
+    "Privileged Role Administrator",
+    "Security Administrator",
+    "Conditional Access Administrator",
+    "Exchange Administrator",
+    "Authentication Administrator",
+    "Privileged Authentication Administrator",
+    "User Administrator"
+  ],
+  "ExpectedLicenseSkuPartNumbers": [
+    "AAD_PREMIUM_P2",
+    "SPE_E5"
+  ]
+}
