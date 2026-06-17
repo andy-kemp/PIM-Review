@@ -409,10 +409,10 @@ function Get-RoleElevationPolicy {
     }
     if ($null -ne $maxDurationHours) {
         if ([double]$maxDurationHours -gt 24) {
-            $controlGaps.Add("Activation window is $([Math]::Round($maxDurationHours,1))h — major control weakness (recommend <= 8h for high-impact roles)")
+            $controlGaps.Add("Activation window is $([Math]::Round($maxDurationHours,1))h - major control weakness (recommend <= 8h for high-impact roles)")
         }
         elseif ([double]$maxDurationHours -gt 8) {
-            $controlGaps.Add("Activation window is $([Math]::Round($maxDurationHours,1))h — exceeds recommended 8h threshold")
+            $controlGaps.Add("Activation window is $([Math]::Round($maxDurationHours,1))h - exceeds recommended 8h threshold")
         }
     }
     if ($null -eq $justificationRequired -or $justificationRequired -eq $false) {
