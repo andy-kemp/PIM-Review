@@ -352,10 +352,10 @@ function Get-RoleElevationPolicy {
     $criticalityTier      = Get-RoleCriticalityTier -RoleName $RoleName -HighImpactRoles $HighImpactRoles
     $isHighImpact         = $criticalityTier -ne 'Standard'
 
-    $assignmentTypeLabel = if ($hasActive -and $hasEligible) { 'Active and Eligible' }
-                           elseif ($hasActive)               { 'Active only' }
-                           elseif ($hasEligible)             { 'Eligible only' }
-                           else                              { 'Unknown' }
+    if ($hasActive -and $hasEligible) { $assignmentTypeLabel = 'Active and Eligible' }
+    elseif ($hasActive)               { $assignmentTypeLabel = 'Active only' }
+    elseif ($hasEligible)             { $assignmentTypeLabel = 'Eligible only' }
+    else                              { $assignmentTypeLabel = 'Unknown' }
 
     # ── Extract activation control settings from specific rule IDs ────────────────
 
@@ -385,17 +385,14 @@ function Get-RoleElevationPolicy {
     $permanentEligibleAllowed = if ($adminEligRule  -and $null -ne $adminEligRule.PermanentEligibleAllowed) { [bool]$adminEligRule.PermanentEligibleAllowed } else { $null }
 
     $approverCount = if ($approvalRequired) { $approverInsights.ApproverCount } else { 0 }
-    $approverType = if (-not $approvalRequired -or $approverCount -eq 0) {
-        'None'
-    }
-    elseif ($approverInsights.ApproverTypeBreakdown -match 'Groups=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
-        'User'
-    }
-    elseif ($approverInsights.ApproverTypeBreakdown -match 'Users=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
-        'Group'
-    }
-    else {
-        'Mixed'
+    if (-not $approvalRequired -or $approverCount -eq 0) {
+        $approverType = 'None'
+    } elseif ($approverInsights.ApproverTypeBreakdown -match 'Groups=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
+        $approverType = 'User'
+    } elseif ($approverInsights.ApproverTypeBreakdown -match 'Users=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
+        $approverType = 'Group'
+    } else {
+        $approverType = 'Mixed'
     }
 
     # ── Control gap analysis ──────────────────────────────────────────────────────
