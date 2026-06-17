@@ -1041,7 +1041,8 @@ function Invoke-FullPimReview {
         [switch]$IncludePimForGroups,
         [switch]$InstallImportExcelIfMissing,
         [switch]$PromptToInstallImportExcel,
-        [switch]$DisableTranscript
+        [switch]$DisableTranscript,
+        [switch]$ForceReConnect
     )
 
     $config = Get-PimConfig -ConfigPath $ConfigPath
@@ -1099,7 +1100,8 @@ function Invoke-FullPimReview {
             -TenantId $config.TenantId `
             -IncludeLicenseDetails:$config.IncludeLicenseDetails `
             -IncludeApprovalHistory:$config.IncludeApprovalHistory `
-            -IncludePimForGroups:$config.IncludePimForGroups
+            -IncludePimForGroups:$config.IncludePimForGroups `
+            -ForceReConnect:$ForceReConnect
 
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
         $tenantProfile = Get-TenantProfile -TenantLabelOverride $config.TenantLabelOverride
@@ -1132,7 +1134,7 @@ function Invoke-FullPimReview {
             $transcriptStarted = Start-PimTranscriptSafe -TranscriptPath $transcriptPath
         }
 
-        $roleAssignments = Get-PimRoleAssignments -OutputFolder $runOutputFolder
+        $roleAssignments = @(Get-PimRoleAssignments -OutputFolder $runOutputFolder)
 
         $policyData = Get-PimRolePolicySettings -RoleAssignments $roleAssignments -OutputFolder $runOutputFolder
         $policyRules = @($policyData.FlatRules)

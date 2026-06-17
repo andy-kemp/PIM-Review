@@ -180,6 +180,8 @@ function Get-PimRolePolicySettings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
         [object[]]$RoleAssignments,
 
         [Parameter(Mandatory)]
