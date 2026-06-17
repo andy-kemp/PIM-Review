@@ -120,7 +120,7 @@ function Get-PimGroupMembers {
 
         if (-not $ReturnObjectsOnly) {
             $safeName = Get-SafeFileName -Name $groupName
-            if ($safeName.Length -gt 60) { $safeName = $safeName.Substring(0, 60) }
+            if ($safeName.Length -gt 40) { $safeName = $safeName.Substring(0, 40) }
             $fileName = "GroupMembers_${safeName}_$groupId.csv"
             $csvPath = Join-Path -Path $groupMembersFolder -ChildPath $fileName
             Export-PimData -Data @($rows) -CsvPath $csvPath
