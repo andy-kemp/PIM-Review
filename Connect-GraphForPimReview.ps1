@@ -11,6 +11,7 @@ Scopes rationale:
 - PIM role policy settings/rules: RoleManagementPolicy.Read.Directory
 - PIM for Groups membership/ownership: Group.Read.All
 - User details and license data: User.Read.All, Organization.Read.All
+- Tenant domains metadata for report labeling: Domain.Read.All
 - Approval and approval steps history (beta): RoleManagement.Read.Directory
 - Conditional Access posture: Policy.Read.All
 - Access reviews coverage: AccessReview.Read.All
@@ -33,7 +34,9 @@ param(
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
-Import-Module -Name $commonModulePath -DisableNameChecking
+if (-not (Get-Module -Name PimReview.Common)) {
+    Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
+}
 
 function Get-DefaultPimScopes {
     [CmdletBinding()]
@@ -53,6 +56,8 @@ function Get-DefaultPimScopes {
         $null = $scopeSet.Add('User.Read.All')
         $null = $scopeSet.Add('Organization.Read.All')
     }
+
+    $null = $scopeSet.Add('Domain.Read.All')
 
     if ($IncludeApprovalHistory) {
         $null = $scopeSet.Add('RoleManagement.Read.Directory')

@@ -1,6 +1,7 @@
 {
   "OutputFolder": "./Output",
   "TenantId": "42cd146c-1e20-4d8b-8df0-e184bb9a0994",
+  "TenantLabelOverride": "South_of_Scotland_Enterprise",
   "IncludeTransitiveMembers": false,
   "IncludeApprovalHistory": true,
   "IncludeLicenseDetails": true,

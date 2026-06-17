@@ -27,7 +27,9 @@ param(
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
-Import-Module -Name $commonModulePath -DisableNameChecking
+if (-not (Get-Module -Name PimReview.Common)) {
+    Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
+}
 
 function New-PimFindings {
     [CmdletBinding()]
@@ -584,6 +586,108 @@ function New-SodConflicts {
     return @($rows | Sort-Object -Property ConflictRisk, UserDisplayName -Descending)
 }
 
+function New-UserElevationPaths {
+    [CmdletBinding()]
+    param(
+        [object[]]$UserAccessPaths
+    )
+
+    $rows = @()
+    $eligibleInherited = @(
+        $UserAccessPaths |
+        Where-Object { $_.AccessPathType -eq 'GroupInherited' -and $_.AssignmentState -eq 'Eligible' }
+    )
+
+    $grouped = @($eligibleInherited | Group-Object -Property UserId)
+    foreach ($grp in $grouped) {
+        $items = @($grp.Group)
+        if ($items.Count -eq 0) {
+            continue
+        }
+
+        $first = $items[0]
+        $roles = @($items | Select-Object -ExpandProperty RoleName -Unique)
+        $sourceGroups = @($items | Select-Object -ExpandProperty SourceGroupDisplayName -Unique)
+
+        $rows += [pscustomobject]@{
+            UserId                     = $first.UserId
+            UserDisplayName            = $first.UserDisplayName
+            UserPrincipalName          = $first.UserPrincipalName
+            UserCategory               = $first.UserCategory
+            EligibleElevationRoleCount = $roles.Count
+            EligibleElevationRoles     = ($roles -join '; ')
+            SourceGroups               = ($sourceGroups -join '; ')
+        }
+    }
+
+    return @($rows | Sort-Object -Property EligibleElevationRoleCount, UserDisplayName -Descending)
+}
+
+function New-ExecutiveScorecard {
+    [CmdletBinding()]
+    param(
+        [object[]]$RoleAssignments,
+        [object[]]$UserAccessPaths,
+        [object[]]$Findings,
+        [object[]]$ConditionalAccessPolicies,
+        [object[]]$SodConflicts
+    )
+
+    $highFindings = @($Findings | Where-Object { $_.RiskRating -eq 'High' }).Count
+    $mediumFindings = @($Findings | Where-Object { $_.RiskRating -eq 'Medium' }).Count
+
+    $gaReachableUsers = @(
+        $UserAccessPaths |
+        Where-Object { $_.RoleName -eq 'Global Administrator' -and $_.AssignmentState -eq 'Active' } |
+        Select-Object -ExpandProperty UserId -Unique
+    )
+
+    $bgAccounts = @(
+        $RoleAssignments |
+        Where-Object {
+            $_.PrincipalType -eq 'User' -and
+            $_.PrincipalId -and
+            (($_.PrincipalDisplayName -match 'break\s*glass') -or ($_.PrincipalDisplayName -match 'emergency') -or ($_.PrincipalUserPrincipalName -match 'break\s*glass|emergency'))
+        } |
+        Select-Object -ExpandProperty PrincipalId -Unique
+    )
+
+    $enabledCaWithoutMfa = @($ConditionalAccessPolicies | Where-Object { $_.State -eq 'enabled' -and $_.RequiresMfaControl -eq $false }).Count
+    $highSod = @($SodConflicts | Where-Object { $_.ConflictRisk -eq 'High' }).Count
+
+    $score = 100
+    $score -= [Math]::Min(40, $highFindings)
+    $score -= [Math]::Min(20, [Math]::Max(0, ($gaReachableUsers.Count - 5)) * 5)
+    $score -= if ($bgAccounts.Count -eq 2) { 0 } else { 15 }
+    $score -= [Math]::Min(15, $enabledCaWithoutMfa)
+    $score -= [Math]::Min(10, $highSod)
+    $score -= [Math]::Min(10, [int]($mediumFindings / 25))
+
+    if ($score -lt 0) {
+        $score = 0
+    }
+
+    $trafficLight = if ($score -ge 80) {
+        'Green'
+    }
+    elseif ($score -ge 60) {
+        'Amber'
+    }
+    else {
+        'Red'
+    }
+
+    $rows = @()
+    $rows += [pscustomobject]@{ Metric = 'OverallRiskScore'; Value = $score; Status = $trafficLight; Target = '>= 80'; Commentary = 'Composite score across identity, policy, and governance controls.' }
+    $rows += [pscustomobject]@{ Metric = 'GlobalAdminReachableUsers'; Value = $gaReachableUsers.Count; Status = if ($gaReachableUsers.Count -le 5) { 'Green' } else { 'Red' }; Target = '<= 5'; Commentary = 'Maximum of five users should have active GA access path.' }
+    $rows += [pscustomobject]@{ Metric = 'BreakGlassAccountsDetected'; Value = $bgAccounts.Count; Status = if ($bgAccounts.Count -eq 2) { 'Green' } elseif ($bgAccounts.Count -lt 2) { 'Red' } else { 'Amber' }; Target = '= 2'; Commentary = 'Maintain exactly two monitored break-glass accounts.' }
+    $rows += [pscustomobject]@{ Metric = 'HighRiskFindings'; Value = $highFindings; Status = if ($highFindings -eq 0) { 'Green' } elseif ($highFindings -le 10) { 'Amber' } else { 'Red' }; Target = '0'; Commentary = 'High-risk findings requiring immediate remediation.' }
+    $rows += [pscustomobject]@{ Metric = 'EnabledCAPoliciesWithoutMFA'; Value = $enabledCaWithoutMfa; Status = if ($enabledCaWithoutMfa -eq 0) { 'Green' } elseif ($enabledCaWithoutMfa -le 2) { 'Amber' } else { 'Red' }; Target = '0'; Commentary = 'Enabled Conditional Access policies that do not enforce MFA control.' }
+    $rows += [pscustomobject]@{ Metric = 'HighRiskSoDConflicts'; Value = $highSod; Status = if ($highSod -eq 0) { 'Green' } elseif ($highSod -le 3) { 'Amber' } else { 'Red' }; Target = '0'; Commentary = 'Users with high-risk toxic role combinations.' }
+
+    return @($rows)
+}
+
 function Build-PimReviewWorkbook {
     [CmdletBinding()]
     param(
@@ -634,6 +738,13 @@ function Build-PimReviewWorkbook {
         -HighImpactRoles @($Config.HighImpactRoles)
 
     $sodConflicts = New-SodConflicts -UserAccessPaths $userAccessPaths
+    $userElevationPaths = New-UserElevationPaths -UserAccessPaths $userAccessPaths
+    $executiveScorecard = New-ExecutiveScorecard `
+        -RoleAssignments $Data.RoleAssignments `
+        -UserAccessPaths $userAccessPaths `
+        -Findings $findings `
+        -ConditionalAccessPolicies $Data.ConditionalAccessPolicies `
+        -SodConflicts $sodConflicts
 
     $findingsCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\Findings.csv'
     Export-PimData -Data $findings -CsvPath $findingsCsvPath
@@ -649,6 +760,12 @@ function Build-PimReviewWorkbook {
 
     $sodConflictsCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\SoDConflicts.csv'
     Export-PimData -Data $sodConflicts -CsvPath $sodConflictsCsvPath
+
+    $userElevationCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\UserElevationPaths.csv'
+    Export-PimData -Data $userElevationPaths -CsvPath $userElevationCsvPath
+
+    $scorecardCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\ExecutiveScorecard.csv'
+    Export-PimData -Data $executiveScorecard -CsvPath $scorecardCsvPath
 
     $excelAvailable = Test-ImportExcelAvailable
 
@@ -696,15 +813,18 @@ function Build-PimReviewWorkbook {
             UserRoleSummary = $userRoleSummary
             GroupRoleSummary = $groupRoleSummary
             SoDConflicts    = $sodConflicts
+            UserElevationPaths = $userElevationPaths
+            ExecutiveScorecard = $executiveScorecard
         }
     }
 
-    Import-Module ImportExcel -ErrorAction Stop
+    Import-Module ImportExcel -ErrorAction Stop -Verbose:$false
     if (Test-Path -Path $workbookPath) {
         Remove-Item -Path $workbookPath -Force
     }
 
     $sheetMap = @(
+        @{ Name = '00_Executive_Scorecard'; Data = $executiveScorecard },
         @{ Name = '01_Summary';            Data = $summary },
         @{ Name = '02_Role_Assignments';   Data = $Data.RoleAssignments },
         @{ Name = '03_Role_Policy_Settings'; Data = $Data.RolePolicyRules },
@@ -724,7 +844,8 @@ function Build-PimReviewWorkbook {
         @{ Name = '17_Workload_Risk';      Data = $Data.WorkloadIdentityRisk },
         @{ Name = '18_Nested_Group_Paths'; Data = $Data.NestedGroupPaths },
         @{ Name = '19_SoD_Conflicts';      Data = $sodConflicts },
-        @{ Name = '20_Findings';           Data = $findings }
+        @{ Name = '20_Findings';           Data = $findings },
+        @{ Name = '21_User_Elevation_Paths'; Data = $userElevationPaths }
     )
 
     foreach ($sheet in $sheetMap) {
@@ -747,6 +868,9 @@ function Build-PimReviewWorkbook {
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '10_User_Access_Paths' -Address 'L:L' -RuleType ContainsText -ConditionValue 'High' -BackgroundColor 'LightSalmon'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '10_User_Access_Paths' -Address 'L:L' -RuleType ContainsText -ConditionValue 'Medium' -BackgroundColor 'Khaki'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '10_User_Access_Paths' -Address 'L:L' -RuleType ContainsText -ConditionValue 'Low' -BackgroundColor 'LightGreen'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '00_Executive_Scorecard' -Address 'C:C' -RuleType ContainsText -ConditionValue 'Red' -BackgroundColor 'LightSalmon'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '00_Executive_Scorecard' -Address 'C:C' -RuleType ContainsText -ConditionValue 'Amber' -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '00_Executive_Scorecard' -Address 'C:C' -RuleType ContainsText -ConditionValue 'Green' -BackgroundColor 'LightGreen'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '19_SoD_Conflicts' -Address 'G:G' -RuleType ContainsText -ConditionValue 'High' -BackgroundColor 'LightSalmon'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '19_SoD_Conflicts' -Address 'G:G' -RuleType ContainsText -ConditionValue 'Medium' -BackgroundColor 'Khaki'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '20_Findings' -Address 'B:B' -RuleType ContainsText -ConditionValue 'High' -BackgroundColor 'LightSalmon'
@@ -772,6 +896,8 @@ function Build-PimReviewWorkbook {
         UserRoleSummary = $userRoleSummary
         GroupRoleSummary = $groupRoleSummary
         SoDConflicts    = $sodConflicts
+        UserElevationPaths = $userElevationPaths
+        ExecutiveScorecard = $executiveScorecard
     }
 }
 

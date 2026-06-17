@@ -61,6 +61,8 @@ The connection script requests least-privilege scopes based on enabled features:
   - `User.Read.All`
 - Subscribed SKU mapping fallback:
   - `Organization.Read.All`
+- Tenant domain profile metadata:
+  - `Domain.Read.All`
 - Approval history and steps (beta-derived):
   - `RoleManagement.Read.Directory`
 - Conditional Access posture:
@@ -74,6 +76,7 @@ The connection script requests least-privilege scopes based on enabled features:
 
 When ImportExcel is available, the workbook includes:
 
+- `00_Executive_Scorecard` (traffic light status, overall score, GA and break-glass control checks)
 - `01_Summary`
 - `02_Role_Assignments`
 - `03_Role_Policy_Settings`
@@ -94,6 +97,7 @@ When ImportExcel is available, the workbook includes:
 - `18_Nested_Group_Paths`
 - `19_SoD_Conflicts`
 - `20_Findings`
+- `21_User_Elevation_Paths` (each user and the roles they can elevate to via group membership)
 
 If ImportExcel is not installed, all CSV/JSON evidence is still exported.
 
@@ -103,6 +107,7 @@ Use `Config/pim-review.config.json` to define:
 
 - output folder
 - optional tenant ID to force connection to a specific tenant
+- optional tenant label override for professional report naming (for example `South_of_Scotland_Enterprise`)
 - include transitive members
 - include approval history
 - include license details
@@ -171,20 +176,43 @@ Each run folder contains:
 - workload identity risk CSV
 - nested group privilege paths CSV
 - segregation-of-duties conflicts CSV
+- executive scorecard CSV
+- user elevation paths CSV
 - findings CSV
 - run metadata JSON
 - summary markdown and HTML report
 - summary PDF report (when Word COM automation is available)
 - transcript log
 
+The HTML/PDF report is a detailed assessment document, including:
+
+- consultancy-style cover page and section index
+- numbered report sections for client presentation
+- explicit role assignments for users and groups (active and eligible)
+- per-user elevation paths based on group memberships
+- executive scorecard with traffic-light status and consultative recommendations
+
 `UserAccessPaths.csv` includes risk classification columns:
 
 - `AccessRiskRating`
 - `AccessRiskReason`
 
+Executive scorecard includes explicit policy controls:
+
+- maximum 5 active Global Administrator reachable users
+- target of exactly 2 break-glass accounts
+
 Workbook naming uses tenant context, for example:
 
 - `PIM_Review_<tenantPrefix-or-name>_<timestamp>.xlsx`
+
+Tenant label selection order is:
+
+- `TenantLabelOverride` (if configured)
+- tenant display name
+- primary domain prefix (for example `sose` from `sose.scot`)
+- initial `.onmicrosoft.com` prefix
+- tenant ID fallback
 
 ## Limitations
 

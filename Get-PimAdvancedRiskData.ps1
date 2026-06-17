@@ -32,7 +32,9 @@ param(
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
-Import-Module -Name $commonModulePath -DisableNameChecking
+if (-not (Get-Module -Name PimReview.Common)) {
+    Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
+}
 
 function Get-ActivationRequests {
     [CmdletBinding()]
@@ -271,10 +273,12 @@ function Get-ServicePrincipalRiskRows {
     foreach ($spId in $spIds) {
         $roles = @($spAssignments | Where-Object { $_.PrincipalId -eq $spId } | Select-Object -ExpandProperty RoleDisplayName -Unique)
         $highImpact = @($roles | Where-Object { $_ -in $HighImpactRoles })
+        $servicePrincipalUri = ('https://graph.microsoft.com/v1.0/servicePrincipals/{0}?$select=id,displayName,appId,accountEnabled,passwordCredentials,keyCredentials' -f $spId)
+        $ownersUri = ('https://graph.microsoft.com/v1.0/servicePrincipals/{0}/owners?$select=id' -f $spId)
 
         $sp = $null
         try {
-            $sp = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$spId?`$select=id,displayName,appId,accountEnabled,passwordCredentials,keyCredentials"
+            $sp = Invoke-GraphRequestWithRetry -Uri $servicePrincipalUri
         }
         catch {
             Write-PimLog -Level WARN -Message "Unable to read service principal ${spId}: $($_.Exception.Message)"
@@ -282,7 +286,7 @@ function Get-ServicePrincipalRiskRows {
 
         $ownerCount = 0
         try {
-            $owners = @(Get-GraphPagedResults -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$spId/owners?`$select=id")
+            $owners = @(Get-GraphPagedResults -Uri $ownersUri)
             $ownerCount = $owners.Count
         }
         catch {

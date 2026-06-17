@@ -24,7 +24,9 @@ param(
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
-Import-Module -Name $commonModulePath -DisableNameChecking
+if (-not (Get-Module -Name PimReview.Common)) {
+    Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
+}
 
 function Convert-GroupMemberRow {
     [CmdletBinding()]
