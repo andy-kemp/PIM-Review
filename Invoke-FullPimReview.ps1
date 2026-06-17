@@ -47,6 +47,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimUserLicenses.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimApprovalData.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimAdvancedRiskData.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimRoleElevationMatrix.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-PimReviewWorkbook.ps1')
 
 function Get-PimConfig {
@@ -329,7 +330,17 @@ function New-PimSummaryReport {
         [object[]]$ExecutiveScorecard
     )
 
+    param([object[]]$RoleElevationMatrix)
+
+
     $highCount = @($Findings | Where-Object { $_.RiskRating -eq 'High' }).Count
+
+    $matrixRows = if ($null -ne $RoleElevationMatrix) { @($RoleElevationMatrix) } else { @() }
+
+    $matrixCritical = @($matrixRows | Where-Object { $_.RiskRating -eq 'Critical' }).Count
+    $matrixHigh     = @($matrixRows | Where-Object { $_.RiskRating -eq 'High'     }).Count
+    $matrixMedium   = @($matrixRows | Where-Object { $_.RiskRating -eq 'Medium'   }).Count
+    $matrixLow      = @($matrixRows | Where-Object { $_.RiskRating -eq 'Low'      }).Count
     $mediumCount = @($Findings | Where-Object { $_.RiskRating -eq 'Medium' }).Count
     $lowCount = @($Findings | Where-Object { $_.RiskRating -eq 'Low' }).Count
 
@@ -423,7 +434,8 @@ function New-PimSummaryReport {
             $first = $rows[0]
             $roles = @($rows | Select-Object -ExpandProperty RoleName -Unique | Sort-Object)
             $groups = @($rows | Select-Object -ExpandProperty SourceGroupDisplayName -Unique | Sort-Object)
-            $activeCount = @($rows | Where-Object { $_.AssignmentState -eq 'Active' }).Count
+               [object[]]$ExecutiveScorecard,
+               [object[]]$RoleElevationMatrix
             $eligibleCount = @($rows | Where-Object { $_.AssignmentState -eq 'Eligible' }).Count
 
             [pscustomobject]@{
@@ -542,6 +554,7 @@ function New-PimSummaryReport {
     $lines += '- 13.0 Detailed Findings Register'
     $lines += '- 14.0 Traffic Light Position'
     $lines += '- 15.0 Consultative Recommendations'
+    $lines += '- 16.0 Privileged Role Elevation Control Matrix'
     $lines += ''
     $lines += '## 1.0 Engagement Context'
     $lines += ''
@@ -718,6 +731,7 @@ function New-PimSummaryReport {
     $html += '<li>13.0 Detailed Findings Register</li>'
     $html += '<li>14.0 Traffic Light Position</li>'
     $html += '<li>15.0 Consultative Recommendations</li>'
+    $html += '<li>16.0 Privileged Role Elevation Control Matrix</li>'
     $html += '</ul>'
 
     $html += '<h2>1.0 Engagement Context</h2>'
@@ -847,6 +861,65 @@ function New-PimSummaryReport {
     $html += '</ul>'
     $html += '</body>'
     $html += '</html>'
+
+    # ── Section 16.0 — Privileged Role Elevation Control Matrix ──────────────────
+    $html += '<h2 class="section-break">16.0 Privileged Role Elevation Control Matrix</h2>'
+    $html += '<p class="section-context">Context: this technical appendix maps every assigned privileged role to its activation control settings and derived risk posture. Use this section to identify where PIM is deployed but ineffectively controlled.</p>'
+    $html += '<ul>'
+    $html += '<li><strong>Elevation Friction Score (0-100):</strong> +40 MFA required, +30 Approval with approvers configured, +20 Max duration &lt;= 8 hours, +10 Justification required. Higher = stronger JIT governance.</li>'
+    $html += '<li><strong>Control Maturity:</strong> Well-Controlled (80-100), Partially Controlled (50-79), Weakly Controlled (20-49), Critical Gap (0-19).</li>'
+    $html += '<li><strong>Risk Rating:</strong> Critical = high-impact with no MFA and no approval. High = high-impact with a major gap or permanent active assignment. Medium = notable control weakness. Low = controls in place.</li>'
+    $html += '</ul>'
+    $html += "<p><strong>Matrix summary:</strong> $($matrixRows.Count) roles analysed."
+    $html += " <span class=""status-pill tl-red"">Critical: $matrixCritical</span>&nbsp;"
+    $html += " <span class=""status-pill tl-red"">High: $matrixHigh</span>&nbsp;"
+    $html += " <span class=""status-pill tl-amber"">Medium: $matrixMedium</span>&nbsp;"
+    $html += " <span class=""status-pill tl-green"">Low: $matrixLow</span></p>"
+
+    if ($matrixRows.Count -gt 0) {
+        $html += '<table>'
+        $html += '<thead><tr><th>Role Name</th><th>High Impact</th><th>Assignment Type</th><th>MFA</th><th>Approval</th><th>Approvers</th><th>Max Duration (h)</th><th>Justification</th><th>Friction Score</th><th>Maturity</th><th>Risk Rating</th><th>Control Gaps</th><th>Access Reviews</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($m in $matrixRows) {
+            $rowBg = switch ($m.RiskRating) {
+                'Critical' { '#ffcdd2' }
+                'High'     { '#ffebee' }
+                'Medium'   { '#fff8e1' }
+                'Low'      { '#f1f8e9' }
+                default    { '#ffffff' }
+            }
+            $ratingStyle = switch ($m.RiskRating) {
+                'Critical' { 'color:#b71c1c;font-weight:700' }
+                'High'     { 'color:#c62828;font-weight:700' }
+                'Medium'   { 'color:#e65100;font-weight:700' }
+                'Low'      { 'color:#2e7d32;font-weight:700' }
+                default    { '' }
+            }
+            $hiLabel    = if ($m.IsHighImpact)          { 'Yes' } else { 'No' }
+            $mfaLabel   = if ($null -eq $m.MfaRequired)          { '?' } elseif ($m.MfaRequired)          { 'Yes' } else { 'No' }
+            $apprLabel  = if ($null -eq $m.ApprovalRequired)     { '?' } elseif ($m.ApprovalRequired)     { 'Yes' } else { 'No' }
+            $justLabel  = if ($null -eq $m.JustificationRequired){ '?' } elseif ($m.JustificationRequired){ 'Yes' } else { 'No' }
+            $durLabel   = if ($null -eq $m.MaxActivationDurationHours) { '?' } else { "$([Math]::Round($m.MaxActivationDurationHours,1))" }
+            $revLabel   = if ($m.AccessReviewsEnabled)  { 'Yes' } else { 'No' }
+            $approverEnc = if ($m.ApproverDisplayNames) { [System.Net.WebUtility]::HtmlEncode([string]$m.ApproverDisplayNames) } else { '&mdash;' }
+            $gapsEnc    = if ($m.ControlGaps) { [System.Net.WebUtility]::HtmlEncode([string]$m.ControlGaps) } else { 'None' }
+            $html += "<tr style=""background:$rowBg"">"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($m.RoleName))</strong></td>"
+            $html += "<td>$hiLabel</td><td>$([System.Net.WebUtility]::HtmlEncode($m.AssignmentTypes))</td>"
+            $html += "<td>$mfaLabel</td><td>$apprLabel</td><td style=""font-size:12px"">$approverEnc</td>"
+            $html += "<td>$durLabel</td><td>$justLabel</td>"
+            $html += "<td><strong>$($m.ElevationFrictionScore)</strong></td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode($m.ControlMaturityLabel))</td>"
+            $html += "<td style=""$ratingStyle"">$([System.Net.WebUtility]::HtmlEncode($m.RiskRating))</td>"
+            $html += "<td style=""font-size:12px"">$gapsEnc</td><td>$revLabel</td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p>No role elevation policy data is available for this run.</p>'
+    }
+
     $html | Out-File -FilePath $summaryHtmlPath -Encoding UTF8
 
     return [pscustomobject]@{
@@ -1052,6 +1125,18 @@ function Invoke-FullPimReview {
 
         $workbookFileName = Get-SafeFileName -Name ("PIM_Review_{0}_{1}.xlsx" -f $tenantProfile.TenantLabel, $runFolderName)
 
+        # Build the Privileged Role Elevation Control Matrix from already-collected data.
+        # No additional Graph API calls are made — analysis runs against the flat policy rules.
+        Write-PimLog -Message 'Building Privileged Role Elevation Control Matrix.'
+        $roleElevationMatrix = @(Get-PimRoleElevationMatrix `
+            -PolicyRules      $policyRules `
+            -RoleAssignments  $roleAssignments `
+            -AccessReviews    @($advancedRisk.AccessReviews) `
+            -Config           $config `
+            -OutputFolder     $rawFolder `
+            -ReturnObjectsOnly)
+        $data['RoleElevationMatrix'] = $roleElevationMatrix
+
         $workbookResult = Build-PimReviewWorkbook -Data $data -Config $config -OutputFolder $runOutputFolder `
             -WorkbookFileName $workbookFileName `
             -InstallImportExcelIfMissing:$config.InstallImportExcelIfMissing `
@@ -1099,6 +1184,8 @@ function Invoke-FullPimReview {
             }
         }
 
+        Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix -NotePropertyValue @($roleElevationMatrix).Count -Force
+
         $summaryInfo = New-PimSummaryReport `
             -OutputFolder $runOutputFolder `
             -TenantProfile $tenantProfile `
@@ -1113,6 +1200,24 @@ function Invoke-FullPimReview {
             -NestedGroupPaths $advancedRisk.NestedGroupPaths `
             -SodConflicts $workbookResult.SoDConflicts `
             -ExecutiveScorecard $workbookResult.ExecutiveScorecard
+
+        $summaryInfo = New-PimSummaryReport `
+            -OutputFolder      $runOutputFolder `
+            -TenantProfile     $tenantProfile `
+            -RunMeta           $runMeta `
+            -RoleAssignments   $roleAssignments `
+            -Findings          $workbookResult.Findings `
+            -UserAccessPaths   $workbookResult.UserAccessPaths `
+            -ActivationAnomalies       $advancedRisk.ActivationAnomalies `
+            -ConditionalAccessPolicies $advancedRisk.ConditionalAccessPolicies `
+            -AccessReviews             $advancedRisk.AccessReviews `
+            -WorkloadIdentityRisk      $advancedRisk.WorkloadIdentityRisk `
+            -NestedGroupPaths          $advancedRisk.NestedGroupPaths `
+            -SodConflicts              $workbookResult.SoDConflicts `
+            -ExecutiveScorecard        $workbookResult.ExecutiveScorecard `
+            -RoleElevationMatrix       $roleElevationMatrix
+
+        Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 
         $summaryPdfPath = Join-Path -Path $runOutputFolder -ChildPath 'Summary.pdf'
     $pdfPath = Convert-SummaryToPdf -MarkdownPath $summaryInfo.MarkdownPath -HtmlPath $summaryInfo.HtmlPath -PdfPath $summaryPdfPath

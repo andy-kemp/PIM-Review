@@ -730,6 +730,21 @@ function Build-PimReviewWorkbook {
         -GroupMembers $Data.GroupMembers `
         -HighImpactRoles @($Config.HighImpactRoles)
 
+    # ── Elevation matrix integration ──────────────────────────────────────────────
+    # Pull the pre-computed matrix from $Data when supplied by the orchestrator.
+    # Correlated findings (exposure + control weakness) are merged into the main findings set.
+    $roleElevationMatrix = if ($Data.ContainsKey('RoleElevationMatrix') -and $Data.RoleElevationMatrix) { @($Data.RoleElevationMatrix) } else { @() }
+    if ($roleElevationMatrix.Count -gt 0 -and (Get-Command -Name Add-RoleControlFindings -ErrorAction SilentlyContinue)) {
+        $findingsList = [System.Collections.Generic.List[object]]::new()
+        foreach ($f in $findings) { $findingsList.Add($f) }
+        Add-RoleControlFindings `
+            -RoleElevationMatrix $roleElevationMatrix `
+            -UserAccessPaths     $userAccessPaths `
+            -HighImpactRoles     @($Config.HighImpactRoles) `
+            -FindingsList        $findingsList
+        $findings = @($findingsList | Sort-Object -Property RiskRating, FindingType, Subject -Unique)
+    }
+
     $userRoleSummary = New-UserRoleSummary -UserAccessPaths $userAccessPaths
     $groupRoleSummary = New-GroupRoleSummary `
         -PrivilegedGroups $Data.PrivilegedGroups `
@@ -766,6 +781,11 @@ function Build-PimReviewWorkbook {
 
     $scorecardCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\ExecutiveScorecard.csv'
     Export-PimData -Data $executiveScorecard -CsvPath $scorecardCsvPath
+
+    if ($roleElevationMatrix.Count -gt 0) {
+        $elevationMatrixCsvPath = Join-Path -Path $OutputFolder -ChildPath 'Raw\RoleElevationMatrix.csv'
+        Export-PimData -Data $roleElevationMatrix -CsvPath $elevationMatrixCsvPath
+    }
 
     $excelAvailable = Test-ImportExcelAvailable
 
@@ -816,6 +836,8 @@ function Build-PimReviewWorkbook {
             UserElevationPaths = $userElevationPaths
             ExecutiveScorecard = $executiveScorecard
         }
+        # Note: RoleElevationMatrix is intentionally omitted here because this path is
+        # reached before the matrix integration block executes; it was set to @() earlier.
     }
 
     Import-Module ImportExcel -ErrorAction Stop -Verbose:$false
@@ -846,6 +868,7 @@ function Build-PimReviewWorkbook {
         @{ Name = '19_SoD_Conflicts';      Data = $sodConflicts },
         @{ Name = '20_Findings';           Data = $findings },
         @{ Name = '21_User_Elevation_Paths'; Data = $userElevationPaths }
+        @{ Name = '22_Role_Elevation_Matrix'; Data = $roleElevationMatrix }
     )
 
     foreach ($sheet in $sheetMap) {
@@ -876,6 +899,11 @@ function Build-PimReviewWorkbook {
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '20_Findings' -Address 'B:B' -RuleType ContainsText -ConditionValue 'High' -BackgroundColor 'LightSalmon'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '20_Findings' -Address 'B:B' -RuleType ContainsText -ConditionValue 'Medium' -BackgroundColor 'Khaki'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '20_Findings' -Address 'B:B' -RuleType ContainsText -ConditionValue 'Low' -BackgroundColor 'LightGreen'
+            # Sheet 22 — Role Elevation Matrix: colour-code RiskRating column (column U = 21st column)
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '22_Role_Elevation_Matrix' -Address 'U:U' -RuleType ContainsText -ConditionValue 'Critical' -BackgroundColor 'LightCoral'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '22_Role_Elevation_Matrix' -Address 'U:U' -RuleType ContainsText -ConditionValue 'High' -BackgroundColor 'LightSalmon'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '22_Role_Elevation_Matrix' -Address 'U:U' -RuleType ContainsText -ConditionValue 'Medium' -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '22_Role_Elevation_Matrix' -Address 'U:U' -RuleType ContainsText -ConditionValue 'Low' -BackgroundColor 'LightGreen'
         }
         else {
             Write-PimLog -Level WARN -Message 'Conditional formatting skipped for this ImportExcel version (no Path parameter support).'
@@ -898,8 +926,10 @@ function Build-PimReviewWorkbook {
         SoDConflicts    = $sodConflicts
         UserElevationPaths = $userElevationPaths
         ExecutiveScorecard = $executiveScorecard
+            RoleElevationMatrix = $roleElevationMatrix
     }
 }
+
 
 if ($MyInvocation.InvocationName -ne '.') {
     Build-PimReviewWorkbook @PSBoundParameters
