@@ -562,19 +562,21 @@ function New-RoleElevationMatrix {
         if ([string]::IsNullOrWhiteSpace($roleName)) { continue }
 
         try {
+            $roleAsgnForRole    = @(if ($assignmentsByRole.ContainsKey($roleName))    { $assignmentsByRole[$roleName] })
+            $roleUserIdsForRole = @(if ($roleUserIdsByRole.ContainsKey($roleName))    { $roleUserIdsByRole[$roleName] })
             $policy = Get-RoleElevationPolicy `
-                -RoleName              $roleName `
-                -RoleRules             @($roleGroup.Group) `
-                -RoleAssignmentsForRole (if ($assignmentsByRole.ContainsKey($roleName)) { @($assignmentsByRole[$roleName]) } else { @() }) `
-                -RoleUserIds           (if ($roleUserIdsByRole.ContainsKey($roleName)) { @($roleUserIdsByRole[$roleName]) } else { @() }) `
-                -PrincipalTypeById     $principalTypeById `
-                -HighImpactRoles       $HighImpactRoles `
-                -AccessReviewRoleSet   $accessReviewRoleSet
+                -RoleName               $roleName `
+                -RoleRules              @($roleGroup.Group) `
+                -RoleAssignmentsForRole $roleAsgnForRole `
+                -RoleUserIds            $roleUserIdsForRole `
+                -PrincipalTypeById      $principalTypeById `
+                -HighImpactRoles        $HighImpactRoles `
+                -AccessReviewRoleSet    $accessReviewRoleSet
 
             $matrix.Add($policy)
         }
         catch {
-            Write-PimLog -Level WARN -Message "Failed to build elevation policy for role '$roleName': $($_.Exception.Message)"
+            Write-PimLog -Level WARN -Message "Failed to build elevation policy for role '$roleName': $($_.Exception.Message) | Stack: $($_.ScriptStackTrace)"
         }
     }
 
