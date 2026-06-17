@@ -327,10 +327,10 @@ function New-PimSummaryReport {
 
         [object[]]$SodConflicts,
 
-        [object[]]$ExecutiveScorecard
-    )
+        [object[]]$ExecutiveScorecard,
 
-    param([object[]]$RoleElevationMatrix)
+        [object[]]$RoleElevationMatrix
+    )
 
 
     $highCount = @($Findings | Where-Object { $_.RiskRating -eq 'High' }).Count
@@ -434,8 +434,7 @@ function New-PimSummaryReport {
             $first = $rows[0]
             $roles = @($rows | Select-Object -ExpandProperty RoleName -Unique | Sort-Object)
             $groups = @($rows | Select-Object -ExpandProperty SourceGroupDisplayName -Unique | Sort-Object)
-               [object[]]$ExecutiveScorecard,
-               [object[]]$RoleElevationMatrix
+            $activeCount = @($rows | Where-Object { $_.AssignmentState -eq 'Active' }).Count
             $eligibleCount = @($rows | Where-Object { $_.AssignmentState -eq 'Eligible' }).Count
 
             [pscustomobject]@{
@@ -539,24 +538,24 @@ function New-PimSummaryReport {
     $lines += ''
     $lines += '## Section Index'
     $lines += ''
-    $lines += '- 1.0 Engagement Context'
-    $lines += '- 2.0 Executive Findings Overview'
-    $lines += '- 3.0 Access Path Overview'
-    $lines += '- 4.0 Governance And Control Posture'
-    $lines += '- 5.0 Top Finding Categories'
-    $lines += '- 6.0 Top Roles By Exposure'
-    $lines += '- 7.0 Risk Posture Narrative'
-    $lines += '- 8.0 Control Strengths And Exposure Indicators'
-    $lines += '- 9.0 Improvement Priorities'
-    $lines += '- 10.0 Executive Scorecard'
-    $lines += '- 11.0 Explicit Role Assignments (Users And Groups)'
-    $lines += '- 12.0 User Elevation Paths Via Group Membership'
-    $lines += '- 13.0 Detailed Findings Register'
-    $lines += '- 14.0 Traffic Light Position'
-    $lines += '- 15.0 Consultative Recommendations'
-    $lines += '- 16.0 Privileged Role Elevation Control Matrix'
+    $lines += '- 1.0 Assessment Engagement Context'
+    $lines += '- 2.0 Privileged Risk Register - Findings Summary by Severity'
+    $lines += '- 3.0 Privilege Exposure Surface - Direct and Group-Inherited Access Paths'
+    $lines += '- 4.0 Governance Control Indicators - Approval, MFA, Conditional Access and Reviews'
+    $lines += '- 5.0 Most Prevalent Risk Finding Categories'
+    $lines += '- 6.0 Highest Exposure Privileged Roles - Ranked by Assignment Count'
+    $lines += '- 7.0 Overall Risk Posture - Composite Assurance Assessment Narrative'
+    $lines += '- 8.0 Control Effectiveness - Verified Strengths and Threshold Indicators'
+    $lines += '- 9.0 Priority Remediation Actions'
+    $lines += '- 10.0 Key Governance Metrics - Executive Assurance Scorecard'
+    $lines += '- 11.0 Direct Privileged Role Assignments - Users and Groups Register'
+    $lines += '- 12.0 Group-Inherited Privilege Paths - Elevation via Group Membership'
+    $lines += '- 13.0 Technical Risk Findings Register - Full Evidence Set'
+    $lines += '- 14.0 RAG Status Indicators - Governance Traffic Light Position'
+    $lines += '- 15.0 Governance Improvement Roadmap - Prioritised Recommendations'
+    $lines += '- 16.0 Privileged Role Elevation Control Matrix - Per-Role Activation Control Assessment'
     $lines += ''
-    $lines += '## 1.0 Engagement Context'
+    $lines += '## 1.0 Assessment Engagement Context'
     $lines += ''
     $lines += "- Run UTC: $($RunMeta.RunUtc)"
     $lines += "- Tenant Display Name: $($TenantProfile.TenantDisplayNameEffective)"
@@ -567,20 +566,20 @@ function New-PimSummaryReport {
     $lines += "- Output Folder: $($RunMeta.OutputFolder)"
     $lines += "- Workbook: $($RunMeta.WorkbookPath)"
     $lines += ''
-    $lines += '## 2.0 Executive Findings Overview'
+    $lines += '## 2.0 Privileged Risk Register - Findings Summary by Severity'
     $lines += ''
     $lines += "- Total Findings: $(@($Findings).Count)"
     $lines += "- High: $highCount"
     $lines += "- Medium: $mediumCount"
     $lines += "- Low: $lowCount"
     $lines += ''
-    $lines += '## 3.0 Access Path Overview'
+    $lines += '## 3.0 Privilege Exposure Surface - Direct and Group-Inherited Access Paths'
     $lines += ''
     $lines += "- Total User Access Paths: $(@($UserAccessPaths).Count)"
     $lines += "- Guest Access Paths: $guestPathCount"
     $lines += "- Guest Group-Inherited Paths: $guestInheritedCount"
     $lines += ''
-    $lines += '## 4.0 Governance And Control Posture'
+    $lines += '## 4.0 Governance Control Indicators - Approval, MFA, Conditional Access and Reviews'
     $lines += ''
     $lines += "- High Activation Anomalies: $highActivationAnomalies"
     $lines += "- Enabled CA Policies Without MFA Control: $caPoliciesNoMfa"
@@ -589,29 +588,29 @@ function New-PimSummaryReport {
     $lines += "- Deep Nested Group Paths (depth >= 2): $deepNestedPaths"
     $lines += "- High-Risk SoD Conflicts: $sodHigh"
     $lines += ''
-    $lines += '## 5.0 Top Finding Categories'
+    $lines += '## 5.0 Most Prevalent Risk Finding Categories'
     $lines += ''
     foreach ($row in $topFindingTypes) {
         $lines += "- $($row.Name): $($row.Count)"
     }
     $lines += ''
-    $lines += '## 6.0 Top Roles By Exposure'
+    $lines += '## 6.0 Highest Exposure Privileged Roles - Ranked by Assignment Count'
     $lines += ''
     foreach ($row in $topRoles) {
         $lines += "- $($row.Name): $($row.Count)"
     }
 
     $lines += ''
-    $lines += '## 7.0 Risk Posture Narrative'
+    $lines += '## 7.0 Overall Risk Posture - Composite Assurance Assessment Narrative'
     $lines += ''
-    $lines += 'Context: This section explains the overall assurance position and what it means for privileged identity governance.'
+    $lines += 'This rating is determined by combining role assignment exposure, activation policy controls, Conditional Access coverage, workload identity hygiene, and segregation-of-duties indicators. It represents the assessor''s objective view of how well privileged access is governed across the tenant at the time of assessment.'
     $lines += "The current PIM operating model is assessed as <span style='color:$trafficLightHex;font-weight:700'>$trafficLightColourName</span> based on role exposure, control coverage, and governance indicators."
     $lines += "This assessment combines direct and inherited privilege paths, role policy controls, CA posture, workload identity hygiene, and segregation-of-duties analysis."
 
     $lines += ''
-    $lines += '## 8.0 Control Strengths And Exposure Indicators'
+    $lines += '## 8.0 Control Effectiveness - Verified Strengths and Threshold Indicators'
     $lines += ''
-    $lines += 'Context: This section highlights controls that are performing well, while showing key exposure indicators against defined thresholds.'
+    $lines += 'Controls are evaluated against best-practice thresholds for Microsoft Entra PIM deployments. Verified strengths confirm areas where governance is operating within expected bounds. Exposure indicators highlight areas where current measured values fall short of the defined target and require management attention.'
     $lines += "- GA Exposure Indicator: <span style='color:$gaExposureHex;font-weight:700'>$gaExposureLabel</span> ($gaValue reachable users)"
     $lines += '- GA Thresholds: Green = 0-5, Amber = 6-9, Red = 10+'
     foreach ($item in $strengths) {
@@ -619,38 +618,38 @@ function New-PimSummaryReport {
     }
 
     $lines += ''
-    $lines += '## 9.0 Improvement Priorities'
+    $lines += '## 9.0 Priority Remediation Actions'
     $lines += ''
     foreach ($item in $improvements) {
         $lines += "- $item"
     }
 
     $lines += ''
-    $lines += '## 10.0 Executive Scorecard'
+    $lines += '## 10.0 Key Governance Metrics - Executive Assurance Scorecard'
     $lines += ''
     $lines += (ConvertTo-MarkdownTable -Rows $scorecardTableRows -Columns @('Metric', 'Value', 'Status', 'Target', 'Commentary'))
 
     $lines += ''
-    $lines += '## 11.0 Explicit Role Assignments (Users And Groups)'
+    $lines += '## 11.0 Direct Privileged Role Assignments - Users and Groups Register'
     $lines += ''
     $lines += (ConvertTo-MarkdownTable -Rows $explicitAssignmentRows -Columns @('PrincipalType', 'PrincipalDisplayName', 'PrincipalUserPrincipalName', 'AssignmentState', 'RoleDisplayName', 'IsPermanent'))
 
     $lines += ''
-    $lines += '## 12.0 User Elevation Paths Via Group Membership'
+    $lines += '## 12.0 Group-Inherited Privilege Paths - Elevation via Group Membership'
     $lines += ''
-    $lines += 'Context: This section shows each user''s inherited privilege routes through groups, including how many unique roles they can reach.'
+    $lines += 'Each user in this section reaches one or more privileged roles exclusively through group membership rather than through a direct role assignment. Group-inherited access is typically less visible in standard reports, may bypass direct-assignment approval gates, and can grant unintended standing access if group membership is not regularly reviewed.'
     $lines += '- Role Count: Number of unique privileged roles reachable by the user via group membership.'
     $lines += '- Active Path Count: Number of currently active inherited role paths via group membership.'
     $lines += '- Eligible Path Count: Number of inherited role paths that are eligible (activatable) but not currently active.'
     $lines += (ConvertTo-MarkdownTable -Rows $groupElevationRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'RoleCount', 'RolesViaGroupMembership', 'ActivePathCount', 'EligiblePathCount', 'SourceGroups'))
 
     $lines += ''
-    $lines += '## 13.0 Detailed Findings Register'
+    $lines += '## 13.0 Technical Risk Findings Register - Full Evidence Set'
     $lines += ''
     $lines += (ConvertTo-MarkdownTable -Rows $findingsDetailRows -Columns @('RiskRating', 'FindingType', 'Subject', 'RoleName', 'Details', 'EvidenceId'))
 
     $lines += ''
-    $lines += '## 14.0 Traffic Light Position'
+    $lines += '## 14.0 RAG Status Indicators - Governance Traffic Light Position'
     $lines += ''
     $lines += "- Overall Score (0-100): $overallScore"
     $lines += "- Overall Status: $overallTrafficLight"
@@ -658,7 +657,7 @@ function New-PimSummaryReport {
     $lines += "- Break Glass Accounts Detected: $bgValue (target = 2)"
 
     $lines += ''
-    $lines += '## 15.0 Consultative Recommendations'
+    $lines += '## 15.0 Governance Improvement Roadmap - Prioritised Recommendations'
     $lines += ''
 
     if ($gaValue -gt 5) {
@@ -695,7 +694,7 @@ function New-PimSummaryReport {
     $html += '<head>'
     $html += '<meta charset="utf-8" />'
     $html += '<title>Privileged Identity Management Assessment Report</title>'
-    $html += '<style>body{font-family:Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#222}h1{font-size:32px;margin-bottom:8px}h2{font-size:22px;margin-top:26px;margin-bottom:10px;border-bottom:1px solid #e3e3e3;padding-bottom:4px}h3{font-size:18px;margin-top:18px;margin-bottom:8px}.cover{border:2px solid #1f4e78;padding:20px;border-radius:8px;background:#f7fbff;margin-bottom:18px}.meta{margin:6px 0}.summary-card{border:2px solid #cfd8e3;padding:16px 18px;border-radius:8px;background:#fcfdff;margin-bottom:24px}.summary-title{font-size:20px;font-weight:700;margin-bottom:8px}.summary-line{margin:4px 0}.section-context{margin:8px 0 10px 0;color:#3f4f61;font-style:italic}.tl-dot{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:8px;vertical-align:middle;border:1px solid rgba(0,0,0,.2)}.tl-green{background:#2e7d32}.tl-amber{background:#ff8f00}.tl-red{background:#c62828}.status-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}.status-text-green{color:#2e7d32;font-weight:700}.status-text-amber{color:#ff8f00;font-weight:700}.status-text-red{color:#c62828;font-weight:700}.section-band{border-radius:8px;padding:12px 16px;margin:22px 0 12px 0;border:1px solid transparent}.section-band h2{margin:0;border-bottom:none;padding-bottom:0;color:#fff}.band-green{background:#2e7d32;border-color:#1b5e20}.band-amber{background:#ff8f00;border-color:#ef6c00}.band-red{background:#c62828;border-color:#8e0000}.section-break{page-break-before:always}ul{margin-top:0}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f4f6f8;text-align:left}.toc li{margin:4px 0}</style>'
+    $html += '<style>body{font-family:Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#222}h1{font-size:32px;margin-bottom:8px}h2{font-size:22px;margin-top:26px;margin-bottom:10px;border-bottom:1px solid #e3e3e3;padding-bottom:4px}h3{font-size:18px;margin-top:18px;margin-bottom:8px}.cover{border:2px solid #1f4e78;padding:20px;border-radius:8px;background:#f7fbff;margin-bottom:18px}.meta{margin:6px 0}.summary-card{border:2px solid #cfd8e3;padding:16px 18px;border-radius:8px;background:#fcfdff;margin-bottom:24px}.summary-title{font-size:20px;font-weight:700;margin-bottom:8px}.summary-line{margin:4px 0}.section-context{margin:8px 0 10px 0;color:#3f4f61;font-style:italic}.section-intro{margin:8px 0 12px 0;color:#2c3e50;font-size:13px;line-height:1.6}.tl-dot{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:8px;vertical-align:middle;border:1px solid rgba(0,0,0,.2)}.tl-green{background:#2e7d32}.tl-amber{background:#ff8f00}.tl-red{background:#c62828}.status-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}.status-text-green{color:#2e7d32;font-weight:700}.status-text-amber{color:#ff8f00;font-weight:700}.status-text-red{color:#c62828;font-weight:700}.section-band{border-radius:8px;padding:12px 16px;margin:22px 0 12px 0;border:1px solid transparent}.section-band h2{margin:0;border-bottom:none;padding-bottom:0;color:#fff}.band-green{background:#2e7d32;border-color:#1b5e20}.band-amber{background:#ff8f00;border-color:#ef6c00}.band-red{background:#c62828;border-color:#8e0000}.section-break{page-break-before:always}ul{margin-top:0}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f4f6f8;text-align:left}.toc li{margin:4px 0}</style>'
     $html += '</head>'
     $html += '<body>'
     $html += '<div class="cover">'
@@ -716,25 +715,25 @@ function New-PimSummaryReport {
 
     $html += '<h2>Section Index</h2>'
     $html += '<ul class="toc">'
-    $html += '<li>1.0 Engagement Context</li>'
-    $html += '<li>2.0 Executive Findings Overview</li>'
-    $html += '<li>3.0 Access Path Overview</li>'
-    $html += '<li>4.0 Governance And Control Posture</li>'
-    $html += '<li>5.0 Top Finding Categories</li>'
-    $html += '<li>6.0 Top Roles By Exposure</li>'
-    $html += '<li>7.0 Risk Posture Narrative</li>'
-    $html += '<li>8.0 Control Strengths And Exposure Indicators</li>'
-    $html += '<li>9.0 Improvement Priorities</li>'
-    $html += '<li>10.0 Executive Scorecard</li>'
-    $html += '<li>11.0 Explicit Role Assignments (Users And Groups)</li>'
-    $html += '<li>12.0 User Elevation Paths Via Group Membership</li>'
-    $html += '<li>13.0 Detailed Findings Register</li>'
-    $html += '<li>14.0 Traffic Light Position</li>'
-    $html += '<li>15.0 Consultative Recommendations</li>'
-    $html += '<li>16.0 Privileged Role Elevation Control Matrix</li>'
+    $html += '<li>1.0 Assessment Engagement Context</li>'
+    $html += '<li>2.0 Privileged Risk Register - Findings Summary by Severity</li>'
+    $html += '<li>3.0 Privilege Exposure Surface - Direct and Group-Inherited Access Paths</li>'
+    $html += '<li>4.0 Governance Control Indicators - Approval, MFA, Conditional Access and Reviews</li>'
+    $html += '<li>5.0 Most Prevalent Risk Finding Categories</li>'
+    $html += '<li>6.0 Highest Exposure Privileged Roles - Ranked by Assignment Count</li>'
+    $html += '<li>7.0 Overall Risk Posture - Composite Assurance Assessment Narrative</li>'
+    $html += '<li>8.0 Control Effectiveness - Verified Strengths and Threshold Indicators</li>'
+    $html += '<li>9.0 Priority Remediation Actions</li>'
+    $html += '<li>10.0 Key Governance Metrics - Executive Assurance Scorecard</li>'
+    $html += '<li>11.0 Direct Privileged Role Assignments - Users and Groups Register</li>'
+    $html += '<li>12.0 Group-Inherited Privilege Paths - Elevation via Group Membership</li>'
+    $html += '<li>13.0 Technical Risk Findings Register - Full Evidence Set</li>'
+    $html += '<li>14.0 RAG Status Indicators - Governance Traffic Light Position</li>'
+    $html += '<li>15.0 Governance Improvement Roadmap - Prioritised Recommendations</li>'
+    $html += '<li>16.0 Privileged Role Elevation Control Matrix - Per-Role Activation Control Assessment</li>'
     $html += '</ul>'
 
-    $html += '<h2>1.0 Engagement Context</h2>'
+    $html += '<h2>1.0 Assessment Engagement Context</h2>'
     $html += '<ul>'
     $html += "<li>Run UTC: $($RunMeta.RunUtc)</li>"
     $html += "<li>Tenant Display Name: $($TenantProfile.TenantDisplayNameEffective)</li>"
@@ -745,20 +744,20 @@ function New-PimSummaryReport {
     $html += "<li>Output Folder: $($RunMeta.OutputFolder)</li>"
     $html += "<li>Workbook: $($RunMeta.WorkbookPath)</li>"
     $html += '</ul>'
-    $html += '<h2>2.0 Executive Findings Overview</h2>'
+    $html += '<h2>2.0 Privileged Risk Register &#8212; Findings Summary by Severity</h2>'
     $html += '<ul>'
     $html += "<li>Total Findings: $(@($Findings).Count)</li>"
     $html += "<li>High: $highCount</li>"
     $html += "<li>Medium: $mediumCount</li>"
     $html += "<li>Low: $lowCount</li>"
     $html += '</ul>'
-    $html += '<h2>3.0 Access Path Overview</h2>'
+    $html += '<h2>3.0 Privilege Exposure Surface &#8212; Direct and Group-Inherited Access Paths</h2>'
     $html += '<ul>'
     $html += "<li>Total User Access Paths: $(@($UserAccessPaths).Count)</li>"
     $html += "<li>Guest Access Paths: $guestPathCount</li>"
     $html += "<li>Guest Group-Inherited Paths: $guestInheritedCount</li>"
     $html += '</ul>'
-    $html += '<h2>4.0 Governance And Control Posture</h2>'
+    $html += '<h2>4.0 Governance Control Indicators &#8212; Approval, MFA, Conditional Access and Reviews</h2>'
     $html += '<ul>'
     $html += "<li>High Activation Anomalies: $highActivationAnomalies</li>"
     $html += "<li>Enabled CA Policies Without MFA Control: $caPoliciesNoMfa</li>"
@@ -767,26 +766,26 @@ function New-PimSummaryReport {
     $html += "<li>Deep Nested Group Paths (depth >= 2): $deepNestedPaths</li>"
     $html += "<li>High-Risk SoD Conflicts: $sodHigh</li>"
     $html += '</ul>'
-    $html += '<h2>5.0 Top Finding Categories</h2>'
+    $html += '<h2>5.0 Most Prevalent Risk Finding Categories</h2>'
     $html += '<ul>'
     foreach ($row in $topFindingTypes) {
         $html += "<li>$($row.Name): $($row.Count)</li>"
     }
     $html += '</ul>'
-    $html += '<h2>6.0 Top Roles By Exposure</h2>'
+    $html += '<h2>6.0 Highest Exposure Privileged Roles &#8212; Ranked by Assignment Count</h2>'
     $html += '<ul>'
     foreach ($row in $topRoles) {
         $html += "<li>$($row.Name): $($row.Count)</li>"
     }
     $html += '</ul>'
 
-    $html += '<h2>7.0 Risk Posture Narrative</h2>'
-    $html += '<p class="section-context">Context: this section explains the overall assurance position and what it means for privileged identity governance.</p>'
+    $html += '<h2>7.0 Overall Risk Posture &#8212; Composite Assurance Assessment Narrative</h2>'
+    $html += '<p class="section-intro">This rating is determined by combining role assignment exposure, activation policy controls, Conditional Access coverage, workload identity hygiene, and segregation-of-duties indicators. It represents the assessor&rsquo;s objective view of how well privileged access is governed across the tenant at the time of this assessment.</p>'
     $html += "<p>The current PIM operating model is assessed as <span class=""$trafficTextClass""><strong>$trafficLightColourName</strong></span> based on role exposure, control coverage, and governance indicators.</p>"
     $html += '<p>This assessment combines direct and inherited privilege paths, role policy controls, Conditional Access posture, workload identity hygiene, and segregation-of-duties analysis.</p>'
 
-    $html += "<div class=""section-band $gaBandClass""><h2>8.0 Control Strengths And Exposure Indicators</h2></div>"
-    $html += '<p class="section-context">Context: this section highlights controls that are performing well, while showing key exposure indicators against defined thresholds.</p>'
+    $html += "<div class=""section-band $gaBandClass""><h2>8.0 Control Effectiveness &#8212; Verified Strengths and Threshold Indicators</h2></div>"
+    $html += '<p class="section-intro">Controls are evaluated against best-practice thresholds for Microsoft Entra PIM deployments. Verified strengths confirm areas where governance is operating within expected bounds. Exposure indicators highlight areas where current measured values fall short of the defined target and require management attention.</p>'
     $html += "<p><strong>GA Exposure Indicator:</strong> <span class=""status-pill $gaExposureClass"">$gaExposureLabel</span> ($gaValue reachable users)</p>"
     $html += '<p><strong>GA Thresholds:</strong> Green = 0-5, Amber = 6-9, Red = 10+</p>'
     $html += '<ul>'
@@ -796,7 +795,7 @@ function New-PimSummaryReport {
     }
     $html += '</ul>'
 
-    $html += '<h2>9.0 Improvement Priorities</h2>'
+    $html += '<h2>9.0 Priority Remediation Actions</h2>'
     $html += '<ul>'
     foreach ($item in $improvements) {
         $safeItem = [System.Net.WebUtility]::HtmlEncode($item)
@@ -804,14 +803,14 @@ function New-PimSummaryReport {
     }
     $html += '</ul>'
 
-    $html += '<h2>10.0 Executive Scorecard</h2>'
+    $html += '<h2>10.0 Key Governance Metrics &#8212; Executive Assurance Scorecard</h2>'
     $html += (ConvertTo-HtmlTable -Rows $scorecardTableRows -Columns @('Metric', 'Value', 'Status', 'Target', 'Commentary'))
 
-    $html += '<h2 class="section-break">11.0 Explicit Role Assignments (Users And Groups)</h2>'
+    $html += '<h2 class="section-break">11.0 Direct Privileged Role Assignments &#8212; Users and Groups Register</h2>'
     $html += (ConvertTo-HtmlTable -Rows $explicitAssignmentRows -Columns @('PrincipalType', 'PrincipalDisplayName', 'PrincipalUserPrincipalName', 'AssignmentState', 'RoleDisplayName', 'IsPermanent'))
 
-    $html += '<h2>12.0 User Elevation Paths Via Group Membership</h2>'
-    $html += '<p class="section-context">Context: this section shows each user''s inherited privilege routes through groups, including how many unique roles they can reach.</p>'
+    $html += '<h2>12.0 Group-Inherited Privilege Paths &#8212; Elevation via Group Membership</h2>'
+    $html += '<p class="section-intro">Each user in this section reaches one or more privileged roles exclusively through group membership rather than through a direct role assignment. Group-inherited access is typically less visible in standard reporting, may bypass direct-assignment approval gates, and can grant unintended standing access if group membership is not regularly reviewed. The role and path counts below indicate the breadth of each user&rsquo;s inherited privilege footprint.</p>'
     $html += '<ul>'
     $html += '<li><strong>Role Count:</strong> Number of unique privileged roles reachable by the user via group membership.</li>'
     $html += '<li><strong>Active Path Count:</strong> Number of currently active inherited role paths via group membership.</li>'
@@ -819,10 +818,10 @@ function New-PimSummaryReport {
     $html += '</ul>'
     $html += (ConvertTo-HtmlTable -Rows $groupElevationRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'RoleCount', 'RolesViaGroupMembership', 'ActivePathCount', 'EligiblePathCount', 'SourceGroups'))
 
-    $html += '<h2 class="section-break">13.0 Detailed Findings Register</h2>'
+    $html += '<h2 class="section-break">13.0 Technical Risk Findings Register &#8212; Full Evidence Set</h2>'
     $html += (ConvertTo-HtmlTable -Rows $findingsDetailRows -Columns @('RiskRating', 'FindingType', 'Subject', 'RoleName', 'Details', 'EvidenceId'))
 
-    $html += '<h2>14.0 Traffic Light Position</h2>'
+    $html += '<h2>14.0 RAG Status Indicators &#8212; Governance Traffic Light Position</h2>'
     $html += '<ul>'
     $html += "<li>Overall Score (0-100): $overallScore</li>"
     $html += "<li>Overall Colour Rating: <span class=""tl-dot $trafficLightClass""></span><span class=""status-pill $trafficLightClass"">$trafficLightColourName</span></li>"
@@ -831,7 +830,7 @@ function New-PimSummaryReport {
     $html += "<li>Break Glass Accounts Detected: $bgValue (target = 2)</li>"
     $html += '</ul>'
 
-    $html += '<h2>15.0 Consultative Recommendations</h2>'
+    $html += '<h2>15.0 Governance Improvement Roadmap &#8212; Prioritised Recommendations</h2>'
     $html += '<ul>'
     if ($gaValue -gt 5) {
         $html += "<li>Priority 1: Reduce active Global Administrator exposure from $gaValue to 5 or fewer by moving excess users to eligible JIT and scoped admin roles.</li>"
@@ -858,13 +857,9 @@ function New-PimSummaryReport {
     if ($highCount -gt 0) {
         $html += "<li>Priority 3: Triage and close $highCount high-risk findings first, then tackle medium findings in a 30/60/90-day plan.</li>"
     }
-    $html += '</ul>'
-    $html += '</body>'
-    $html += '</html>'
-
     # ── Section 16.0 — Privileged Role Elevation Control Matrix ──────────────────
-    $html += '<h2 class="section-break">16.0 Privileged Role Elevation Control Matrix</h2>'
-    $html += '<p class="section-context">Context: this technical appendix maps every assigned privileged role to its activation control settings and derived risk posture. Use this section to identify where PIM is deployed but ineffectively controlled.</p>'
+    $html += '<h2 class="section-break">16.0 Privileged Role Elevation Control Matrix &#8212; Per-Role Activation Control Assessment</h2>'
+    $html += '<p class="section-intro">This appendix maps every assigned privileged role to its PIM activation policy settings and derives an objective risk posture for each one. The <strong>Elevation Friction Score</strong> (0&#8211;100) measures how many JIT controls a user must pass before activating the role. The <strong>Risk Rating</strong> combines role criticality tier with the specific control gaps identified. Roles rated Critical or High should be prioritised for immediate policy remediation.</p>'
     $html += '<ul>'
     $html += '<li><strong>Elevation Friction Score (0-100):</strong> +40 MFA required, +30 Approval with approvers configured, +20 Max duration &lt;= 8 hours, +10 Justification required. Higher = stronger JIT governance.</li>'
     $html += '<li><strong>Control Maturity:</strong> Well-Controlled (80-100), Partially Controlled (50-79), Weakly Controlled (20-49), Critical Gap (0-19).</li>'
@@ -878,7 +873,7 @@ function New-PimSummaryReport {
 
     if ($matrixRows.Count -gt 0) {
         $html += '<table>'
-        $html += '<thead><tr><th>Role Name</th><th>High Impact</th><th>Assignment Type</th><th>MFA</th><th>Approval</th><th>Approvers</th><th>Max Duration (h)</th><th>Justification</th><th>Friction Score</th><th>Maturity</th><th>Risk Rating</th><th>Control Gaps</th><th>Access Reviews</th></tr></thead>'
+        $html += '<thead><tr><th>Role Name</th><th>Criticality</th><th>High Impact</th><th>Assignment Type</th><th>MFA</th><th>Approval</th><th>Approver Type</th><th>Approvers</th><th>Approver Details</th><th>Max Duration (h)</th><th>Justification</th><th>Ticketing</th><th>Friction Score</th><th>Maturity</th><th>Risk Rating</th><th>Control Gaps</th><th>Access Reviews</th></tr></thead>'
         $html += '<tbody>'
         foreach ($m in $matrixRows) {
             $rowBg = switch ($m.RiskRating) {
@@ -899,15 +894,18 @@ function New-PimSummaryReport {
             $mfaLabel   = if ($null -eq $m.MfaRequired)          { '?' } elseif ($m.MfaRequired)          { 'Yes' } else { 'No' }
             $apprLabel  = if ($null -eq $m.ApprovalRequired)     { '?' } elseif ($m.ApprovalRequired)     { 'Yes' } else { 'No' }
             $justLabel  = if ($null -eq $m.JustificationRequired){ '?' } elseif ($m.JustificationRequired){ 'Yes' } else { 'No' }
+            $ticketLabel = if ($null -eq $m.TicketingRequired) { '?' } elseif ($m.TicketingRequired) { 'Yes' } else { 'No' }
             $durLabel   = if ($null -eq $m.MaxActivationDurationHours) { '?' } else { "$([Math]::Round($m.MaxActivationDurationHours,1))" }
             $revLabel   = if ($m.AccessReviewsEnabled)  { 'Yes' } else { 'No' }
             $approverEnc = if ($m.ApproverDisplayNames) { [System.Net.WebUtility]::HtmlEncode([string]$m.ApproverDisplayNames) } else { '&mdash;' }
+            $approverDetailEnc = if ($m.ApproverDetails) { [System.Net.WebUtility]::HtmlEncode([string]$m.ApproverDetails) } else { '&mdash;' }
             $gapsEnc    = if ($m.ControlGaps) { [System.Net.WebUtility]::HtmlEncode([string]$m.ControlGaps) } else { 'None' }
             $html += "<tr style=""background:$rowBg"">"
             $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($m.RoleName))</strong></td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$m.RoleCriticalityTier))</td>"
             $html += "<td>$hiLabel</td><td>$([System.Net.WebUtility]::HtmlEncode($m.AssignmentTypes))</td>"
-            $html += "<td>$mfaLabel</td><td>$apprLabel</td><td style=""font-size:12px"">$approverEnc</td>"
-            $html += "<td>$durLabel</td><td>$justLabel</td>"
+            $html += "<td>$mfaLabel</td><td>$apprLabel</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$m.ApproverType))</td><td style=""font-size:12px"">$approverEnc</td><td style=""font-size:12px"">$approverDetailEnc</td>"
+            $html += "<td>$durLabel</td><td>$justLabel</td><td>$ticketLabel</td>"
             $html += "<td><strong>$($m.ElevationFrictionScore)</strong></td>"
             $html += "<td>$([System.Net.WebUtility]::HtmlEncode($m.ControlMaturityLabel))</td>"
             $html += "<td style=""$ratingStyle"">$([System.Net.WebUtility]::HtmlEncode($m.RiskRating))</td>"
@@ -919,6 +917,10 @@ function New-PimSummaryReport {
     else {
         $html += '<p>No role elevation policy data is available for this run.</p>'
     }
+
+    $html += '</ul>'
+    $html += '</body>'
+    $html += '</html>'
 
     $html | Out-File -FilePath $summaryHtmlPath -Encoding UTF8
 
@@ -949,9 +951,64 @@ function Convert-SummaryToPdf {
         return $null
     }
 
+    # Build a Word-friendly version of the HTML that strips CSS classes Word cannot
+    # render (coloured pills, border-radius, background-color on table cells) and
+    # replaces them with inline styles that the Word HTML engine honours.
+    $printHtmlPath = [System.IO.Path]::ChangeExtension($HtmlPath, '.print.html')
+    try {
+        $raw = [System.IO.File]::ReadAllText($HtmlPath, [System.Text.Encoding]::UTF8)
+
+        # Replace coloured status pill spans with plain bold bracketed text
+        $raw = $raw -replace '<span[^>]+class="[^"]*status-pill tl-red[^"]*"[^>]*>(.*?)</span>', '<strong>[$1]</strong>'
+        $raw = $raw -replace '<span[^>]+class="[^"]*status-pill tl-amber[^"]*"[^>]*>(.*?)</span>', '<strong>[$1]</strong>'
+        $raw = $raw -replace '<span[^>]+class="[^"]*status-pill tl-green[^"]*"[^>]*>(.*?)</span>', '<strong>[$1]</strong>'
+        $raw = $raw -replace '<span[^>]+class="[^"]*status-pill[^"]*"[^>]*>(.*?)</span>', '<strong>[$1]</strong>'
+
+        # Replace tl-dot divs with plain text indicators
+        $raw = $raw -replace '<div[^>]+class="[^"]*tl-dot tl-green[^"]*"[^>]*></div>', '<strong>[GREEN]</strong>&nbsp;'
+        $raw = $raw -replace '<div[^>]+class="[^"]*tl-dot tl-amber[^"]*"[^>]*></div>', '<strong>[AMBER]</strong>&nbsp;'
+        $raw = $raw -replace '<div[^>]+class="[^"]*tl-dot tl-red[^"]*"[^>]*></div>', '<strong>[RED]</strong>&nbsp;'
+
+        # Strip section-band coloured divs — keep inner content only
+        $raw = $raw -replace '<div[^>]+class="[^"]*section-band[^"]*"[^>]*>(.*?)</div>', '$1'
+
+        # Replace coloured background on table cells with a border
+        $raw = $raw -replace '(<td[^>]+)style="[^"]*background[^"]*"', '$1style="border:1px solid #999;"'
+        $raw = $raw -replace '(<th[^>]+)style="[^"]*background[^"]*"', '$1style="border:1px solid #999;font-weight:bold;"'
+
+        # Inject a minimal Word-compatible style block before </head>
+        $wordStyle = @'
+<style>
+body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000;margin:0}
+h1{font-size:18pt;font-weight:bold;margin-top:16pt;margin-bottom:8pt}
+h2{font-size:14pt;font-weight:bold;margin-top:14pt;margin-bottom:6pt;border-bottom:1px solid #999;padding-bottom:3pt}
+h3{font-size:12pt;font-weight:bold;margin-top:10pt;margin-bottom:4pt}
+table{border-collapse:collapse;width:100%;font-size:9pt}
+th,td{border:1px solid #888;padding:4pt 6pt;vertical-align:top}
+th{font-weight:bold;background:#e8e8e8}
+ul,ol{margin:4pt 0 4pt 18pt}
+li{margin-bottom:3pt}
+p{margin:4pt 0}
+</style>
+'@
+        $raw = $raw -replace '(?i)</head>', "$wordStyle`n</head>"
+        [System.IO.File]::WriteAllText($printHtmlPath, $raw, [System.Text.Encoding]::UTF8)
+    }
+    catch {
+        Write-PimLog -Level WARN -Message "Could not build print-friendly HTML; will use source HTML for PDF. Error: $($_.Exception.Message)"
+        $printHtmlPath = $HtmlPath
+    }
+
     try {
         $word.Visible = $false
-        $doc = $word.Documents.Open($HtmlPath)
+        $doc = $word.Documents.Open($printHtmlPath)
+
+        # Set generous margins so table columns do not overflow
+        $doc.PageSetup.TopMargin    = $word.InchesToPoints(0.75)
+        $doc.PageSetup.BottomMargin = $word.InchesToPoints(0.75)
+        $doc.PageSetup.LeftMargin   = $word.InchesToPoints(0.75)
+        $doc.PageSetup.RightMargin  = $word.InchesToPoints(0.75)
+
         $wdFormatPDF = 17
         $doc.SaveAs([ref]$PdfPath, [ref]$wdFormatPDF)
         $doc.Close()
@@ -964,6 +1021,10 @@ function Convert-SummaryToPdf {
     finally {
         if ($word) {
             $word.Quit()
+        }
+        # Clean up the temporary print HTML
+        if ($printHtmlPath -ne $HtmlPath -and (Test-Path $printHtmlPath)) {
+            Remove-Item -Path $printHtmlPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -1185,21 +1246,6 @@ function Invoke-FullPimReview {
         }
 
         Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix -NotePropertyValue @($roleElevationMatrix).Count -Force
-
-        $summaryInfo = New-PimSummaryReport `
-            -OutputFolder $runOutputFolder `
-            -TenantProfile $tenantProfile `
-            -RunMeta $runMeta `
-            -RoleAssignments $roleAssignments `
-            -Findings $workbookResult.Findings `
-            -UserAccessPaths $workbookResult.UserAccessPaths `
-            -ActivationAnomalies $advancedRisk.ActivationAnomalies `
-            -ConditionalAccessPolicies $advancedRisk.ConditionalAccessPolicies `
-            -AccessReviews $advancedRisk.AccessReviews `
-            -WorkloadIdentityRisk $advancedRisk.WorkloadIdentityRisk `
-            -NestedGroupPaths $advancedRisk.NestedGroupPaths `
-            -SodConflicts $workbookResult.SoDConflicts `
-            -ExecutiveScorecard $workbookResult.ExecutiveScorecard
 
         $summaryInfo = New-PimSummaryReport `
             -OutputFolder      $runOutputFolder `

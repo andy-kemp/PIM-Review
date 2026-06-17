@@ -58,6 +58,104 @@ if (-not (Get-Module -Name PimReview.Common)) {
     Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
 }
 
+# ─── Helper functions ──────────────────────────────────────────────────────────
+
+function Get-NormalizedRoleName {
+    [CmdletBinding()]
+    param([string]$RoleName)
+
+    if ([string]::IsNullOrWhiteSpace($RoleName)) { return '' }
+    return $RoleName.Trim().ToLowerInvariant()
+}
+
+function Get-RoleCriticalityTier {
+    [CmdletBinding()]
+    param(
+        [string]$RoleName,
+        [string[]]$HighImpactRoles
+    )
+
+    $normalizedRole = Get-NormalizedRoleName -RoleName $RoleName
+    $normalizedHighImpact = @($HighImpactRoles | ForEach-Object { Get-NormalizedRoleName -RoleName $_ } | Where-Object { $_ })
+
+    if ($normalizedRole -notin $normalizedHighImpact) {
+        return 'Standard'
+    }
+
+    switch ($normalizedRole) {
+        'global administrator' { return 'Tier0-GlobalAdministrator' }
+        'privileged role administrator' { return 'Tier0-PrivilegedRoleAdministrator' }
+        'conditional access administrator' { return 'Tier0-ConditionalAccessAdministrator' }
+        'security administrator' { return 'Tier0-SecurityAdministrator' }
+        'privileged authentication administrator' { return 'Tier0-PrivilegedAuthenticationAdministrator' }
+        'authentication policy administrator' { return 'Tier0-PrivilegedAuthenticationAdministrator' }
+        default { return 'HighImpact' }
+    }
+}
+
+function Get-RolePriorityWeight {
+    [CmdletBinding()]
+    param([string]$RoleCriticalityTier)
+
+    switch ($RoleCriticalityTier) {
+        'Tier0-GlobalAdministrator' { return 4 }
+        'Tier0-PrivilegedRoleAdministrator' { return 4 }
+        'Tier0-ConditionalAccessAdministrator' { return 3 }
+        'Tier0-SecurityAdministrator' { return 3 }
+        'Tier0-PrivilegedAuthenticationAdministrator' { return 3 }
+        'HighImpact' { return 2 }
+        default { return 1 }
+    }
+}
+
+function Get-ApproverInsights {
+    [CmdletBinding()]
+    param(
+        [string]$ApproverIds,
+        [string]$ApproverDisplayNames,
+        [hashtable]$PrincipalTypeById
+    )
+
+    $ids = @(($ApproverIds -split ';') | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+    $names = @(($ApproverDisplayNames -split ';') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+    $details = New-Object System.Collections.Generic.List[string]
+    $userCount = 0
+    $groupCount = 0
+    $spCount = 0
+    $unknownCount = 0
+
+    for ($i = 0; $i -lt $ids.Count; $i++) {
+        $id = $ids[$i]
+        $name = if ($i -lt $names.Count) { $names[$i] } else { $id }
+
+        $type = 'Unknown'
+        if ($PrincipalTypeById -and $PrincipalTypeById.ContainsKey($id) -and -not [string]::IsNullOrWhiteSpace($PrincipalTypeById[$id])) {
+            $type = [string]$PrincipalTypeById[$id]
+        }
+
+        switch ($type) {
+            'User' { $userCount++ }
+            'Group' { $groupCount++ }
+            'ServicePrincipal' { $spCount++ }
+            default { $unknownCount++ }
+        }
+
+        $details.Add("$name ($type)")
+    }
+
+    $approverTypeBreakdown = "Users=$userCount; Groups=$groupCount; ServicePrincipals=$spCount; Unknown=$unknownCount"
+
+    return [pscustomobject]@{
+        ApproverIds           = ($ids -join '; ')
+        ApproverDisplayNames  = (($details | ForEach-Object { ($_ -replace ' \([^)]+\)$', '') }) -join '; ')
+        ApproverDetails       = ($details -join '; ')
+        ApproverCount         = $ids.Count
+        ApproverTypeBreakdown = $approverTypeBreakdown
+        HasUnknownApproverType = ($unknownCount -gt 0)
+    }
+}
+
 # ─── Pure scoring functions ────────────────────────────────────────────────────
 
 function Get-ElevationFrictionScore {
@@ -117,24 +215,37 @@ function Get-RoleControlRiskRating {
     #>
     [CmdletBinding()]
     param(
-        [bool]$IsHighImpact,
+        [string]$RoleCriticalityTier,
         [bool]$MfaRequired,
         [bool]$ApprovalRequired,
         [int]$ApproverCount,
         [bool]$HasPermanentActiveAssignment,
         [bool]$HasPermanentEligibleAssignment,
-        [AllowNull()][object]$MaxActivationDurationHours
+        [AllowNull()][object]$MaxActivationDurationHours,
+        [bool]$AccessReviewsEnabled,
+        [int]$GovernanceWeaknessCount,
+        [bool]$TicketingRequired
     )
 
+    $roleWeight           = Get-RolePriorityWeight -RoleCriticalityTier $RoleCriticalityTier
+    $isTier0              = $roleWeight -ge 3
+    $isHighImpact         = $roleWeight -ge 2
     $hasEffectiveApproval = $ApprovalRequired -and $ApproverCount -gt 0
     $noMfa                = -not $MfaRequired
     $noApproval           = -not $hasEffectiveApproval
     $veryLongDuration     = $null -ne $MaxActivationDurationHours -and [double]$MaxActivationDurationHours -gt 24
+    $longDuration         = $null -ne $MaxActivationDurationHours -and [double]$MaxActivationDurationHours -gt 8
+    $noTicketing          = -not $TicketingRequired
 
-    if ($IsHighImpact -and $noMfa -and $noApproval)                                    { return 'Critical' }
-    if ($IsHighImpact -and ($noMfa -or $noApproval -or $HasPermanentActiveAssignment)) { return 'High' }
-    if ($IsHighImpact -and $HasPermanentEligibleAssignment)                            { return 'High' }
-    if ($noMfa -or $noApproval -or $veryLongDuration)                                 { return 'Medium' }
+    if ($isTier0 -and $HasPermanentActiveAssignment) { return 'Critical' }
+    if ($isTier0 -and $noMfa -and $noApproval) { return 'Critical' }
+
+    if ($isTier0 -and ($noMfa -or $noApproval -or $HasPermanentEligibleAssignment -or $longDuration -or -not $AccessReviewsEnabled)) { return 'High' }
+    if ($isHighImpact -and ($noMfa -and $noApproval)) { return 'High' }
+    if ($isHighImpact -and ($HasPermanentActiveAssignment -or $HasPermanentEligibleAssignment)) { return 'High' }
+    if ($isHighImpact -and $GovernanceWeaknessCount -ge 2) { return 'High' }
+
+    if ($noMfa -or $noApproval -or $veryLongDuration -or $GovernanceWeaknessCount -gt 0 -or $noTicketing) { return 'Medium' }
 
     return 'Low'
 }
@@ -153,8 +264,9 @@ function Test-ApprovalGovernanceWeakness {
         [int]$ApproverCount,
         [string]$ApproverDisplayNames,
         [string]$ApproverIds,
-        [string]$RoleName,
-        [object[]]$AllRoleAssignments
+        [string[]]$RoleUserIds,
+        [bool]$HasUnknownApproverType,
+        [string]$RoleCriticalityTier
     )
 
     $weaknesses = New-Object System.Collections.Generic.List[string]
@@ -175,12 +287,12 @@ function Test-ApprovalGovernanceWeakness {
 
     # Detect potential self-approval: approver IDs overlap with principals assigned to this role
     # This is flagged as "potential" because group membership of approvers cannot be evaluated without extra API calls
-    $roleUserIds  = @(
-        $AllRoleAssignments |
-        Where-Object { $_.RoleDisplayName -eq $RoleName -and $_.PrincipalType -eq 'User' } |
-        Select-Object -ExpandProperty PrincipalId -Unique
-    )
-    $overlapCount = @($idList | Where-Object { $_ -in $roleUserIds }).Count
+    $roleUserIdSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($userId in @($RoleUserIds | Where-Object { $_ })) {
+        [void]$roleUserIdSet.Add([string]$userId)
+    }
+
+    $overlapCount = @($idList | Where-Object { $roleUserIdSet.Contains($_) }).Count
     if ($overlapCount -gt 0) {
         $weaknesses.Add("Potential self-approval risk: $overlapCount approver identity(s) also hold this role directly. This cannot be confirmed definitively without group membership evaluation but warrants governance review.")
     }
@@ -189,6 +301,14 @@ function Test-ApprovalGovernanceWeakness {
     if ($ApproverCount -eq 1) {
         $approverLabel = if ($nameList.Count -gt 0) { $nameList[0] } else { 'unknown approver' }
         $weaknesses.Add("Single approver configured ($approverLabel). This creates an availability dependency and may not provide adequate separation of duty for sensitive role activation.")
+    }
+
+    if ($HasUnknownApproverType) {
+        $weaknesses.Add('One or more approvers could not be classified as User or Group from collected evidence. Validate approver object types to confirm accountable approval design.')
+    }
+
+    if ($RoleCriticalityTier -like 'Tier0-*' -and $ApproverCount -lt 2) {
+        $weaknesses.Add('Tier-0 role has fewer than two approvers configured. Introduce at least two independent approvers for resilience and separation of duty.')
     }
 
     return @($weaknesses)
@@ -216,18 +336,21 @@ function Get-RoleElevationPolicy {
         [Parameter(Mandatory)]
         [object[]]$RoleRules,
 
-        [object[]]$AllRoleAssignments,
+        [object[]]$RoleAssignmentsForRole,
+        [string[]]$RoleUserIds,
+        [hashtable]$PrincipalTypeById,
         [string[]]$HighImpactRoles,
-        [string[]]$AccessReviewRoleNames
+        $AccessReviewRoleSet
     )
 
     # ── Derive assignment context from actual assignment data ─────────────────────
-    $roleAsgn             = @($AllRoleAssignments | Where-Object { $_.RoleDisplayName -eq $RoleName })
+    $roleAsgn             = @($RoleAssignmentsForRole)
     $hasActive            = @($roleAsgn | Where-Object { $_.AssignmentState -eq 'Active'   }).Count -gt 0
     $hasEligible          = @($roleAsgn | Where-Object { $_.AssignmentState -eq 'Eligible' }).Count -gt 0
     $hasPermanentActive   = @($roleAsgn | Where-Object { $_.AssignmentState -eq 'Active'   -and $_.IsPermanent }).Count -gt 0
     $hasPermanentEligible = @($roleAsgn | Where-Object { $_.AssignmentState -eq 'Eligible' -and $_.IsPermanent }).Count -gt 0
-    $isHighImpact         = $RoleName -in $HighImpactRoles
+    $criticalityTier      = Get-RoleCriticalityTier -RoleName $RoleName -HighImpactRoles $HighImpactRoles
+    $isHighImpact         = $criticalityTier -ne 'Standard'
 
     $assignmentTypeLabel = if ($hasActive -and $hasEligible) { 'Active and Eligible' }
                            elseif ($hasActive)               { 'Active only' }
@@ -247,6 +370,11 @@ function Get-RoleElevationPolicy {
     $approverIds          = if ($approvalRule -and $approvalRule.ApproverIds)          { [string]$approvalRule.ApproverIds }          else { $null }
     $approverDisplayNames = if ($approvalRule -and $approvalRule.ApproverDisplayNames) { [string]$approvalRule.ApproverDisplayNames } else { $null }
 
+    $approverInsights = Get-ApproverInsights `
+        -ApproverIds $approverIds `
+        -ApproverDisplayNames $approverDisplayNames `
+        -PrincipalTypeById $PrincipalTypeById
+
     $expRule              = @($RoleRules | Where-Object { $_.RuleId -match 'Expiration_EndUser_Assignment' }) | Select-Object -First 1
     $maxDurationIso       = if ($expRule -and $expRule.MaxActivationDuration) { [string]$expRule.MaxActivationDuration } else { $null }
     $maxDurationHours     = if ($maxDurationIso) { Convert-Iso8601DurationToHours -Duration $maxDurationIso } else { $null }
@@ -256,8 +384,19 @@ function Get-RoleElevationPolicy {
     $permanentActiveAllowed  = if ($adminActiveRule -and $null -ne $adminActiveRule.PermanentActiveAllowed)  { [bool]$adminActiveRule.PermanentActiveAllowed  } else { $null }
     $permanentEligibleAllowed = if ($adminEligRule  -and $null -ne $adminEligRule.PermanentEligibleAllowed) { [bool]$adminEligRule.PermanentEligibleAllowed } else { $null }
 
-    # Approver type: conservative default; full typing would require resolving approver object types via Graph
-    $approverType = if ($approvalRequired -and $approverCount -gt 0) { 'User' } else { 'None' }
+    $approverCount = if ($approvalRequired) { $approverInsights.ApproverCount } else { 0 }
+    $approverType = if (-not $approvalRequired -or $approverCount -eq 0) {
+        'None'
+    }
+    elseif ($approverInsights.ApproverTypeBreakdown -match 'Groups=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
+        'User'
+    }
+    elseif ($approverInsights.ApproverTypeBreakdown -match 'Users=0' -and $approverInsights.ApproverTypeBreakdown -match 'Unknown=0') {
+        'Group'
+    }
+    else {
+        'Mixed'
+    }
 
     # ── Control gap analysis ──────────────────────────────────────────────────────
     $controlGaps = New-Object System.Collections.Generic.List[string]
@@ -295,14 +434,27 @@ function Get-RoleElevationPolicy {
         $controlGaps.Add('Role policy permits permanent eligible assignments (no enforced expiry)')
     }
 
+    $normalizedRoleName = Get-NormalizedRoleName -RoleName $RoleName
+    $reviewsEnabled = if ($null -ne $AccessReviewRoleSet -and $AccessReviewRoleSet.Count -gt 0) {
+        $AccessReviewRoleSet.Contains($normalizedRoleName)
+    } else { $false }
+    if ($isHighImpact -and -not $reviewsEnabled) {
+        $controlGaps.Add('No active access review coverage detected for this high-impact role')
+    }
+
+    if ($isHighImpact -and ($null -eq $ticketingRequired -or $ticketingRequired -eq $false)) {
+        $controlGaps.Add('Ticketing/case reference is not required for high-impact role activation')
+    }
+
     # ── Governance weakness detection ─────────────────────────────────────────────
     $govWeaknesses = Test-ApprovalGovernanceWeakness `
         -ApprovalRequired     $approvalRequired `
         -ApproverCount        $approverCount `
-        -ApproverDisplayNames ([string]$approverDisplayNames) `
-        -ApproverIds          ([string]$approverIds) `
-        -RoleName             $RoleName `
-        -AllRoleAssignments   $AllRoleAssignments
+        -ApproverDisplayNames ([string]$approverInsights.ApproverDisplayNames) `
+        -ApproverIds          ([string]$approverInsights.ApproverIds) `
+        -RoleUserIds          $RoleUserIds `
+        -HasUnknownApproverType $approverInsights.HasUnknownApproverType `
+        -RoleCriticalityTier  $criticalityTier
 
     # ── Derived scores and labels ─────────────────────────────────────────────────
     $frictionScore = Get-ElevationFrictionScore `
@@ -315,24 +467,25 @@ function Get-RoleElevationPolicy {
     $maturityLabel = Get-ControlMaturityLabel -FrictionScore $frictionScore
 
     $riskRating = Get-RoleControlRiskRating `
-        -IsHighImpact                 $isHighImpact `
+        -RoleCriticalityTier          $criticalityTier `
         -MfaRequired                  ([bool]$mfaRequired) `
         -ApprovalRequired             $approvalRequired `
         -ApproverCount                $approverCount `
         -HasPermanentActiveAssignment $hasPermanentActive `
         -HasPermanentEligibleAssignment $hasPermanentEligible `
-        -MaxActivationDurationHours   $maxDurationHours
+        -MaxActivationDurationHours   $maxDurationHours `
+        -AccessReviewsEnabled         $reviewsEnabled `
+        -GovernanceWeaknessCount      @($govWeaknesses).Count `
+        -TicketingRequired            ([bool]$ticketingRequired)
 
     # Compact risk rationale from the first three detected gaps
     $rationaleItems = @($controlGaps | Select-Object -First 3)
     $riskRationale  = if ($rationaleItems.Count -gt 0) { $rationaleItems -join '. ' } else { 'No significant control gaps detected.' }
 
-    # Access review coverage: check whether any review references this role name
-    $reviewsEnabled = $RoleName -in @($AccessReviewRoleNames | Where-Object { $_ })
-
     return [pscustomobject]@{
         RoleName                       = $RoleName
         IsHighImpact                   = $isHighImpact
+        RoleCriticalityTier            = $criticalityTier
         AssignmentTypes                = $assignmentTypeLabel
         HasPermanentActiveAssignment   = $hasPermanentActive
         HasPermanentEligibleAssignment = $hasPermanentEligible
@@ -341,7 +494,9 @@ function Get-RoleElevationPolicy {
         ApprovalRequired               = $approvalRequired
         ApproverCount                  = $approverCount
         ApproverType                   = $approverType
-        ApproverDisplayNames           = $approverDisplayNames
+        ApproverTypeBreakdown          = $approverInsights.ApproverTypeBreakdown
+        ApproverDisplayNames           = $approverInsights.ApproverDisplayNames
+        ApproverDetails                = $approverInsights.ApproverDetails
         JustificationRequired          = $justificationRequired
         TicketingRequired              = $ticketingRequired
         PermanentActiveAllowed         = $permanentActiveAllowed
@@ -369,16 +524,40 @@ function New-RoleElevationMatrix {
 
     Write-PimLog -Message 'Building Privileged Role Elevation Control Matrix.'
 
-    # Collect role names that have access review coverage for cross-referencing
-    $accessReviewRoleNames = @(
-        $AccessReviews |
-        ForEach-Object {
-            if ($_.ReviewedRoleName) { $_.ReviewedRoleName }
-            elseif ($_.RoleName)     { $_.RoleName }
-        } |
-        Where-Object { $_ } |
-        Select-Object -Unique
-    )
+    $accessReviewRoleSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($review in @($AccessReviews)) {
+        $candidate = if ($review.ReviewedRoleName) { [string]$review.ReviewedRoleName } elseif ($review.RoleName) { [string]$review.RoleName } else { $null }
+        $normalized = Get-NormalizedRoleName -RoleName $candidate
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            [void]$accessReviewRoleSet.Add($normalized)
+        }
+    }
+
+    $assignmentsByRole = @{}
+    $roleUserIdsByRole = @{}
+    $principalTypeById = @{}
+
+    foreach ($assignment in @($RoleAssignments)) {
+        if (-not $assignment) { continue }
+        $roleName = if ($assignment.RoleDisplayName) { [string]$assignment.RoleDisplayName } else { '' }
+        if ([string]::IsNullOrWhiteSpace($roleName)) { continue }
+
+        if (-not $assignmentsByRole.ContainsKey($roleName)) {
+            $assignmentsByRole[$roleName] = [System.Collections.Generic.List[object]]::new()
+        }
+        $assignmentsByRole[$roleName].Add($assignment)
+
+        if ($assignment.PrincipalId -and $assignment.PrincipalType) {
+            $principalTypeById[[string]$assignment.PrincipalId] = [string]$assignment.PrincipalType
+        }
+
+        if ($assignment.PrincipalType -eq 'User' -and $assignment.PrincipalId) {
+            if (-not $roleUserIdsByRole.ContainsKey($roleName)) {
+                $roleUserIdsByRole[$roleName] = [System.Collections.Generic.List[string]]::new()
+            }
+            $roleUserIdsByRole[$roleName].Add([string]$assignment.PrincipalId)
+        }
+    }
 
     $rulesByRole = @($PolicyRules | Group-Object -Property RoleName)
     $matrix      = New-Object System.Collections.Generic.List[object]
@@ -391,9 +570,11 @@ function New-RoleElevationMatrix {
             $policy = Get-RoleElevationPolicy `
                 -RoleName              $roleName `
                 -RoleRules             @($roleGroup.Group) `
-                -AllRoleAssignments    $RoleAssignments `
+                -RoleAssignmentsForRole (if ($assignmentsByRole.ContainsKey($roleName)) { @($assignmentsByRole[$roleName]) } else { @() }) `
+                -RoleUserIds           (if ($roleUserIdsByRole.ContainsKey($roleName)) { @($roleUserIdsByRole[$roleName]) } else { @() }) `
+                -PrincipalTypeById     $principalTypeById `
                 -HighImpactRoles       $HighImpactRoles `
-                -AccessReviewRoleNames $accessReviewRoleNames
+                -AccessReviewRoleSet   $accessReviewRoleSet
 
             $matrix.Add($policy)
         }
@@ -484,6 +665,28 @@ function Add-RoleControlFindings {
             })
         }
 
+        if ($policy.IsHighImpact -and -not $policy.AccessReviewsEnabled) {
+            $FindingsList.Add([pscustomobject]@{
+                FindingType = 'High-Impact Role Missing Access Review Coverage'
+                RiskRating  = if ($policy.RoleCriticalityTier -like 'Tier0-*') { 'High' } else { 'Medium' }
+                Subject     = $policy.RoleName
+                RoleName    = $policy.RoleName
+                Details     = "High-impact role '$($policy.RoleName)' has no active access review evidence in scope. Introduce periodic review campaigns for all standing and eligible assignments to this role."
+                EvidenceId  = "ElevationMatrix_$($policy.RoleName)"
+            })
+        }
+
+        if ($policy.RoleCriticalityTier -like 'Tier0-*' -and $policy.ApprovalRequired -and $policy.ApproverCount -eq 1) {
+            $FindingsList.Add([pscustomobject]@{
+                FindingType = 'Tier-0 Role Has Single Approver'
+                RiskRating  = 'High'
+                Subject     = $policy.RoleName
+                RoleName    = $policy.RoleName
+                Details     = "Tier-0 role '$($policy.RoleName)' is configured with a single approver. This creates a governance bottleneck and weakens resilience and separation of duties."
+                EvidenceId  = "ElevationMatrix_$($policy.RoleName)"
+            })
+        }
+
         # ── Governance weaknesses flagged ─────────────────────────────────────────
         if (-not [string]::IsNullOrWhiteSpace($policy.GovernanceWeaknesses)) {
             $FindingsList.Add([pscustomobject]@{
@@ -508,6 +711,42 @@ function Add-RoleControlFindings {
             })
         }
     }
+}
+
+function ConvertTo-RoleElevationMatrixExportRows {
+    [CmdletBinding()]
+    param([object[]]$RoleElevationMatrix)
+
+    return @(
+        foreach ($row in @($RoleElevationMatrix)) {
+            [pscustomobject]@{
+                RoleName                       = $row.RoleName
+                RoleCriticalityTier            = $row.RoleCriticalityTier
+                RiskRating                     = $row.RiskRating
+                ControlMaturityLabel           = $row.ControlMaturityLabel
+                ElevationFrictionScore         = $row.ElevationFrictionScore
+                AssignmentTypes                = $row.AssignmentTypes
+                MaxActivationDurationHours     = $row.MaxActivationDurationHours
+                MfaRequired                    = $row.MfaRequired
+                ApprovalRequired               = $row.ApprovalRequired
+                ApproverCount                  = $row.ApproverCount
+                ApproverType                   = $row.ApproverType
+                ApproverTypeBreakdown          = $row.ApproverTypeBreakdown
+                ApproverDisplayNames           = $row.ApproverDisplayNames
+                ApproverDetails                = $row.ApproverDetails
+                JustificationRequired          = $row.JustificationRequired
+                TicketingRequired              = $row.TicketingRequired
+                AccessReviewsEnabled           = $row.AccessReviewsEnabled
+                HasPermanentActiveAssignment   = $row.HasPermanentActiveAssignment
+                HasPermanentEligibleAssignment = $row.HasPermanentEligibleAssignment
+                PermanentActiveAllowed         = $row.PermanentActiveAllowed
+                PermanentEligibleAllowed       = $row.PermanentEligibleAllowed
+                ControlGaps                    = $row.ControlGaps
+                GovernanceWeaknesses           = $row.GovernanceWeaknesses
+                RiskRationale                  = $row.RiskRationale
+            }
+        }
+    )
 }
 
 # ─── Main exported function ─────────────────────────────────────────────────────
