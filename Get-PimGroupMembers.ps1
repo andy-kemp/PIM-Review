@@ -40,6 +40,7 @@ function Convert-GroupMemberRow {
     $isNested = $memberType -eq 'Group'
     $memberDisplayName = $null
     $memberUpn = $null
+    $memberUserType = $null
     $memberAccountEnabled = $null
 
     if ($Member -and ($null -ne $Member.PSObject.Properties['displayName']) -and $Member.displayName) {
@@ -48,6 +49,10 @@ function Convert-GroupMemberRow {
 
     if ($Member -and ($null -ne $Member.PSObject.Properties['userPrincipalName']) -and $Member.userPrincipalName) {
         $memberUpn = $Member.userPrincipalName
+    }
+
+    if ($Member -and ($null -ne $Member.PSObject.Properties['userType']) -and $Member.userType) {
+        $memberUserType = $Member.userType
     }
 
     if (-not $memberDisplayName) {
@@ -64,6 +69,7 @@ function Convert-GroupMemberRow {
         MemberId                = $Member.id
         MemberDisplayName       = $memberDisplayName
         MemberUserPrincipalName = $memberUpn
+        MemberUserType          = $memberUserType
         MemberType              = $memberType
         AccountEnabled          = $memberAccountEnabled
         IsNestedGroup           = $isNested
@@ -93,7 +99,7 @@ function Get-PimGroupMembers {
         $groupId = $group.GroupId
         $groupName = if ($group.GroupDisplayName) { $group.GroupDisplayName } else { $groupId }
         $memberPath = if ($IncludeTransitiveMembers) { 'transitiveMembers' } else { 'members' }
-        $uri = "https://graph.microsoft.com/v1.0/groups/${groupId}/${memberPath}?`$select=id,displayName,userPrincipalName,accountEnabled"
+        $uri = "https://graph.microsoft.com/v1.0/groups/${groupId}/${memberPath}?`$select=id,displayName,userPrincipalName,userType,accountEnabled"
 
         Write-PimLog -Message "Retrieving $memberPath for group $groupName ($groupId)."
 

@@ -11,6 +11,8 @@ This solution exports the current Privileged Identity Management (PIM) state for
 It produces:
 - Raw CSV/JSON evidence files
 - A single multi-sheet Excel workbook (when ImportExcel is available)
+- Tenant-scoped run folder naming
+- A markdown summary report for each run
 
 The implementation is read-only and idempotent for reporting.
 
@@ -61,6 +63,12 @@ The connection script requests least-privilege scopes based on enabled features:
   - `Organization.Read.All`
 - Approval history and steps (beta-derived):
   - `RoleManagement.Read.Directory`
+- Conditional Access posture:
+  - `Policy.Read.All`
+- Access review definitions:
+  - `AccessReview.Read.All`
+- Workload identity hygiene:
+  - `Application.Read.All`
 
 ## Workbook Sheets
 
@@ -75,7 +83,17 @@ When ImportExcel is available, the workbook includes:
 - `07_User_Licenses`
 - `08_Approval_Settings`
 - `09_Approval_History` (beta-derived where applicable)
-- `10_Findings`
+- `10_User_Access_Paths` (user/guest direct and group-inherited privileged access paths)
+- `11_User_Role_Summary` (one row per user with direct vs inherited role coverage and max risk)
+- `12_Group_Role_Summary` (one row per privileged group with role coverage, member counts, and risk)
+- `13_Activation_Requests` (beta-derived)
+- `14_Activation_Anomalies`
+- `15_Conditional_Access`
+- `16_Access_Reviews` (beta-derived)
+- `17_Workload_Risk`
+- `18_Nested_Group_Paths`
+- `19_SoD_Conflicts`
+- `20_Findings`
 
 If ImportExcel is not installed, all CSV/JSON evidence is still exported.
 
@@ -84,6 +102,7 @@ If ImportExcel is not installed, all CSV/JSON evidence is still exported.
 Use `Config/pim-review.config.json` to define:
 
 - output folder
+- optional tenant ID to force connection to a specific tenant
 - include transitive members
 - include approval history
 - include license details
@@ -102,6 +121,17 @@ From the project root:
 pwsh ./Invoke-FullPimReview.ps1 -ConfigPath ./Config/pim-review.config.json -Verbose
 ```
 
+To force a specific tenant for cross-tenant reviews:
+
+```powershell
+pwsh ./Invoke-FullPimReview.ps1 `
+  -ConfigPath ./Config/pim-review.config.json `
+  -TenantId <tenant-guid-or-domain> `
+  -Verbose
+```
+
+If `TenantId` is not provided in config or command line, the script prompts at runtime for a tenant ID or verified domain. Press Enter at the prompt to continue with the current/default Graph context.
+
 Optional switches can override config values:
 
 ```powershell
@@ -117,7 +147,11 @@ pwsh ./Invoke-FullPimReview.ps1 `
 
 ## Raw Evidence Exports
 
-Per run, the script creates a timestamped folder under `Output` containing:
+Per run, the script creates tenant-scoped output under `Output`:
+
+- `<tenantPrefix-or-name>_<tenantId>/Run-YYYYMMDD-HHMMSS/`
+
+Each run folder contains:
 
 - role assignments CSV
 - role policy settings flat CSV + raw JSON
@@ -126,9 +160,31 @@ Per run, the script creates a timestamped folder under `Output` containing:
 - user licenses CSV
 - approval settings CSV
 - approval history CSV (beta-derived)
+- tenant details CSV + JSON
+- user access paths CSV
+- user role access summary CSV
+- group role access summary CSV
+- activation requests CSV (beta-derived)
+- activation anomalies CSV
+- conditional access policy CSV
+- access reviews CSV (beta-derived)
+- workload identity risk CSV
+- nested group privilege paths CSV
+- segregation-of-duties conflicts CSV
 - findings CSV
 - run metadata JSON
+- summary markdown and HTML report
+- summary PDF report (when Word COM automation is available)
 - transcript log
+
+`UserAccessPaths.csv` includes risk classification columns:
+
+- `AccessRiskRating`
+- `AccessRiskReason`
+
+Workbook naming uses tenant context, for example:
+
+- `PIM_Review_<tenantPrefix-or-name>_<timestamp>.xlsx`
 
 ## Limitations
 

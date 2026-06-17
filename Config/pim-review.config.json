@@ -1,5 +1,6 @@
 {
   "OutputFolder": "./Output",
+  "TenantId": "42cd146c-1e20-4d8b-8df0-e184bb9a0994",
   "IncludeTransitiveMembers": false,
   "IncludeApprovalHistory": true,
   "IncludeLicenseDetails": true,

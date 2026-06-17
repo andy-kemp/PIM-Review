@@ -12,6 +12,9 @@ Scopes rationale:
 - PIM for Groups membership/ownership: Group.Read.All
 - User details and license data: User.Read.All, Organization.Read.All
 - Approval and approval steps history (beta): RoleManagement.Read.Directory
+- Conditional Access posture: Policy.Read.All
+- Access reviews coverage: AccessReview.Read.All
+- Workload identity hygiene: Application.Read.All
 
 .EXAMPLE
 ./Connect-GraphForPimReview.ps1 -IncludeLicenseDetails -IncludeApprovalHistory -Verbose
@@ -22,6 +25,7 @@ Connect-GraphForPimReview -Scopes @('RoleManagement.Read.Directory','Group.Read.
 [CmdletBinding()]
 param(
     [string[]]$Scopes,
+    [string]$TenantId,
     [switch]$IncludeLicenseDetails,
     [switch]$IncludeApprovalHistory,
     [switch]$IncludePimForGroups,
@@ -59,6 +63,10 @@ function Get-DefaultPimScopes {
         $null = $scopeSet.Add('PrivilegedEligibilitySchedule.Read.AzureADGroup')
     }
 
+    $null = $scopeSet.Add('Policy.Read.All')
+    $null = $scopeSet.Add('AccessReview.Read.All')
+    $null = $scopeSet.Add('Application.Read.All')
+
     return @($scopeSet)
 }
 
@@ -66,6 +74,7 @@ function Connect-GraphForPimReview {
     [CmdletBinding()]
     param(
         [string[]]$Scopes,
+        [string]$TenantId,
         [switch]$IncludeLicenseDetails,
         [switch]$IncludeApprovalHistory,
         [switch]$IncludePimForGroups,
@@ -85,6 +94,10 @@ function Connect-GraphForPimReview {
 
     $currentContext = Get-MgContext -ErrorAction SilentlyContinue
     if ($currentContext -and -not $ForceReConnect) {
+        if (-not [string]::IsNullOrWhiteSpace($TenantId) -and $currentContext.TenantId -ne $TenantId) {
+            Write-PimLog -Level WARN -Message "Existing context tenant ($($currentContext.TenantId)) differs from requested tenant ($TenantId). Reconnecting."
+        }
+        else {
         $missing = @($requestedScopes | Where-Object { $_ -notin $currentContext.Scopes })
         if ($missing.Count -eq 0) {
             Write-PimLog -Message 'Existing Microsoft Graph context satisfies requested scopes.'
@@ -92,10 +105,23 @@ function Connect-GraphForPimReview {
         }
 
         Write-PimLog -Level WARN -Message "Existing context is missing scopes: $($missing -join ', '). Reconnecting."
+        }
     }
 
-    Write-PimLog -Message "Connecting to Microsoft Graph with delegated scopes: $($requestedScopes -join ', ')"
-    Connect-MgGraph -Scopes $requestedScopes -NoWelcome
+    $connectParams = @{
+        Scopes    = $requestedScopes
+        NoWelcome = $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $connectParams.TenantId = $TenantId
+        Write-PimLog -Message "Connecting to Microsoft Graph for tenant $TenantId with delegated scopes: $($requestedScopes -join ', ')"
+    }
+    else {
+        Write-PimLog -Message "Connecting to Microsoft Graph with delegated scopes: $($requestedScopes -join ', ')"
+    }
+
+    Connect-MgGraph @connectParams
 
     $context = Get-MgContext
     if (-not $context) {

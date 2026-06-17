@@ -50,6 +50,17 @@ function Convert-AssignmentInstance {
     }
 
     $principalType = if ($principal) { Get-PrincipalType -Principal $principal } else { 'Unknown' }
+    $principalUpn = $null
+    $principalUserType = $null
+
+    if ($principal -and ($null -ne $principal.PSObject.Properties['userPrincipalName']) -and $principal.userPrincipalName) {
+        $principalUpn = $principal.userPrincipalName
+    }
+
+    if ($principal -and ($null -ne $principal.PSObject.Properties['userType']) -and $principal.userType) {
+        $principalUserType = $principal.userType
+    }
+
     $isPermanent = [string]::IsNullOrWhiteSpace([string]$Item.endDateTime)
     $principalDisplayName = $null
     if ($principal) {
@@ -68,6 +79,8 @@ function Convert-AssignmentInstance {
         RoleDefinitionId     = $Item.roleDefinitionId
         PrincipalId          = $Item.principalId
         PrincipalDisplayName = $principalDisplayName
+        PrincipalUserPrincipalName = $principalUpn
+        PrincipalUserType    = $principalUserType
         PrincipalType        = $principalType
         MemberType           = $Item.memberType
         StartDateTimeUtc     = $Item.startDateTime
