@@ -104,14 +104,58 @@ function Get-PimRoleAssignments {
 
     $null = Ensure-Directory -Path $OutputFolder
 
-    $activeUri = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?$expand=principal,roleDefinition'
-    $eligibleUri = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances?$expand=principal,roleDefinition'
+    $activeUri    = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?$expand=principal,roleDefinition'
+    $eligibleUri  = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances?$expand=principal,roleDefinition'
+    $legacyUri    = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$expand=principal,roleDefinition'
 
+    # ── Active assignments ─────────────────────────────────────────────────────
     Write-PimLog -Message 'Retrieving Active role assignments from roleAssignmentScheduleInstances.'
-    $activeItems = Get-GraphPagedResults -Uri $activeUri
+    $activeItems = @()
+    try {
+        $activeItems = @(Get-GraphPagedResults -Uri $activeUri)
+    }
+    catch {
+        if ($_.Exception.Message -match '403|Forbidden|UnauthorizedAccess') {
+            Write-PimLog -Level WARN -Message (
+                '403 Forbidden on roleAssignmentScheduleInstances. The signed-in account requires at least one ' +
+                'of the following Entra ID directory roles: Global Reader, Privileged Role Reader, ' +
+                'Security Reader, Global Administrator, or Privileged Role Administrator. ' +
+                'Attempting fallback to legacy roleAssignments endpoint (active permanent assignments only; ' +
+                'eligible and time-bounded assignments will not be available in this mode).'
+            )
+            try {
+                $activeItems = @(Get-GraphPagedResults -Uri $legacyUri)
+                Write-PimLog -Message "Legacy roleAssignments fallback succeeded: $($activeItems.Count) item(s) returned."
+            }
+            catch {
+                Write-PimLog -Level WARN -Message "Legacy roleAssignments fallback also failed: $($_.Exception.Message). Role assignment data will be empty for this run."
+                $activeItems = @()
+            }
+        }
+        else {
+            Write-PimLog -Level WARN -Message "Unexpected error retrieving active role assignments: $($_.Exception.Message). Active assignment data will be empty for this run."
+            $activeItems = @()
+        }
+    }
 
+    # ── Eligible assignments ───────────────────────────────────────────────────
     Write-PimLog -Message 'Retrieving Eligible role assignments from roleEligibilityScheduleInstances.'
-    $eligibleItems = Get-GraphPagedResults -Uri $eligibleUri
+    $eligibleItems = @()
+    try {
+        $eligibleItems = @(Get-GraphPagedResults -Uri $eligibleUri)
+    }
+    catch {
+        if ($_.Exception.Message -match '403|Forbidden|UnauthorizedAccess') {
+            Write-PimLog -Level WARN -Message (
+                '403 Forbidden on roleEligibilityScheduleInstances. ' +
+                'Eligible assignment data will be omitted. Assign Global Reader or Privileged Role Reader to the signed-in account to enable this data.'
+            )
+        }
+        else {
+            Write-PimLog -Level WARN -Message "Unexpected error retrieving eligible role assignments: $($_.Exception.Message). Eligible assignment data will be empty for this run."
+        }
+        $eligibleItems = @()
+    }
 
     $activeRows = @(
         foreach ($item in @($activeItems)) {
