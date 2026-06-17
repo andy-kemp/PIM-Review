@@ -435,9 +435,7 @@ function Get-RoleElevationPolicy {
     }
 
     $normalizedRoleName = Get-NormalizedRoleName -RoleName $RoleName
-    $reviewsEnabled = if ($null -ne $AccessReviewRoleSet -and $AccessReviewRoleSet.Count -gt 0) {
-        $AccessReviewRoleSet.Contains($normalizedRoleName)
-    } else { $false }
+    $reviewsEnabled = ($null -ne $AccessReviewRoleSet) -and $AccessReviewRoleSet.Contains($normalizedRoleName)
     if ($isHighImpact -and -not $reviewsEnabled) {
         $controlGaps.Add('No active access review coverage detected for this high-impact role')
     }
