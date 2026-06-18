@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Performs deep approval model analysis for PIM-protected privileged roles.
 
@@ -40,7 +40,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
     Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
 }
 
-# ─── Group-type classification ────────────────────────────────────────────────
+# â”€â”€â”€ Group-type classification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-GroupType {
     <#
@@ -71,7 +71,7 @@ function Get-GroupType {
     return 'Unknown'
 }
 
-# ─── Cached group detail fetch ────────────────────────────────────────────────
+# â”€â”€â”€ Cached group detail fetch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-ApproverGroupDetails {
     <#
@@ -101,7 +101,7 @@ function Get-ApproverGroupDetails {
     }
 }
 
-# ─── Group membership expansion ───────────────────────────────────────────────
+# â”€â”€â”€ Group membership expansion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-GroupMembersExpanded {
     <#
@@ -122,7 +122,7 @@ function Get-GroupMembersExpanded {
     if ([string]::IsNullOrWhiteSpace($GroupId)) { return @() }
     if ($MemberCache.ContainsKey($GroupId)) { return $MemberCache[$GroupId] }
 
-    $members = New-Object System.Collections.Generic.List[object]
+    $members = [System.Collections.ArrayList]::new()
 
     $uri = "https://graph.microsoft.com/v1.0/groups/${GroupId}/members?`$select=id,displayName,userPrincipalName,userType,mail,assignedLicenses"
     $rawMembers = @()
@@ -135,7 +135,7 @@ function Get-GroupMembersExpanded {
         return @()
     }
 
-    # We also need @odata.type — use the directoryObjects endpoint fallback if needed
+    # We also need @odata.type â€” use the directoryObjects endpoint fallback if needed
     foreach ($member in $rawMembers) {
         $odataType = if ($null -ne $member.PSObject.Properties['@odata.type']) { [string]$member.'@odata.type' } else { '' }
         $memberId  = if ($member.id) { [string]$member.id } else { '' }
@@ -146,7 +146,7 @@ function Get-GroupMembersExpanded {
         $isUserMember  = ($odataType -match 'user') -or ($null -ne $member.PSObject.Properties['userPrincipalName'] -and $member.userPrincipalName)
 
         if ($isGroupMember) {
-            # Nested group — resolve one level deeper
+            # Nested group â€” resolve one level deeper
             $nestedId          = $memberId
             $nestedDisplayName = if ($member.displayName) { [string]$member.displayName } else { $nestedId }
 
@@ -173,7 +173,7 @@ function Get-GroupMembersExpanded {
                 $nmUserType  = if ($null -ne $nm.PSObject.Properties['userType'] -and $nm.userType) { [string]$nm.userType } else { 'Member' }
                 $nmLicensed  = $null -ne $nm.PSObject.Properties['assignedLicenses'] -and $nm.assignedLicenses -and @($nm.assignedLicenses).Count -gt 0
 
-                $members.Add([pscustomobject]@{
+                [void]$members.Add([pscustomobject]@{
                     UserId            = [string]$nm.id
                     DisplayName       = if ($nm.displayName) { [string]$nm.displayName } else { $null }
                     UserPrincipalName = $nmUpn
@@ -190,7 +190,7 @@ function Get-GroupMembersExpanded {
             $userType = if ($null -ne $member.PSObject.Properties['userType'] -and $member.userType) { [string]$member.userType } else { 'Member' }
             $licensed = $null -ne $member.PSObject.Properties['assignedLicenses'] -and $member.assignedLicenses -and @($member.assignedLicenses).Count -gt 0
 
-            $members.Add([pscustomobject]@{
+            [void]$members.Add([pscustomobject]@{
                 UserId            = $memberId
                 DisplayName       = if ($member.displayName) { [string]$member.displayName } else { $null }
                 UserPrincipalName = $upn
@@ -209,7 +209,7 @@ function Get-GroupMembersExpanded {
     return $result
 }
 
-# ─── Approver profile builder ─────────────────────────────────────────────────
+# â”€â”€â”€ Approver profile builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-ApproverProfiles {
     <#
@@ -228,7 +228,7 @@ function Get-ApproverProfiles {
         [hashtable]$GroupDetailCache
     )
 
-    $profiles = New-Object System.Collections.Generic.List[object]
+    $profiles = [System.Collections.ArrayList]::new()
     if ([string]::IsNullOrWhiteSpace($ApproverIds)) { return @() }
 
     $prefixPattern = '^' + [regex]::Escape($NamingPrefix)
@@ -260,7 +260,7 @@ function Get-ApproverProfiles {
             $isLicensed = $userObj -and ($null -ne $userObj.PSObject.Properties['assignedLicenses']) -and $userObj.assignedLicenses -and @($userObj.assignedLicenses).Count -gt 0
             $isPrivileged = $PrivilegedUserHash.ContainsKey($approverId)
 
-            $profiles.Add([pscustomobject]@{
+            [void]$profiles.Add([pscustomobject]@{
                 RoleName           = $RoleName
                 ApproverObjectId   = $approverId
                 ApproverObjectType = 'User'
@@ -291,8 +291,8 @@ function Get-ApproverProfiles {
                 -DetailCache      $GroupDetailCache)
 
             if ($groupMembers.Count -eq 0) {
-                # Empty group — still record a sentinel row so the analysis can flag it
-                $profiles.Add([pscustomobject]@{
+                # Empty group â€” still record a sentinel row so the analysis can flag it
+                [void]$profiles.Add([pscustomobject]@{
                     RoleName           = $RoleName
                     ApproverObjectId   = $approverId
                     ApproverObjectType = 'Group'
@@ -318,7 +318,7 @@ function Get-ApproverProfiles {
                     $isNamingCompliant = if ($upn -and -not $isGuest) { $upn -match $prefixPattern } else { $true }
                     $isPrivileged     = $member.UserId -and $PrivilegedUserHash.ContainsKey([string]$member.UserId)
 
-                    $profiles.Add([pscustomobject]@{
+                    [void]$profiles.Add([pscustomobject]@{
                         RoleName           = $RoleName
                         ApproverObjectId   = $approverId
                         ApproverObjectType = 'Group'
@@ -340,8 +340,8 @@ function Get-ApproverProfiles {
             }
         }
         else {
-            # Unresolvable approver — record Unknown sentinel
-            $profiles.Add([pscustomobject]@{
+            # Unresolvable approver â€” record Unknown sentinel
+            [void]$profiles.Add([pscustomobject]@{
                 RoleName           = $RoleName
                 ApproverObjectId   = $approverId
                 ApproverObjectType = 'Unknown'
@@ -365,7 +365,7 @@ function Get-ApproverProfiles {
     return @($profiles)
 }
 
-# ─── Approval integrity classification ────────────────────────────────────────
+# â”€â”€â”€ Approval integrity classification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Test-ApprovalIntegrity {
     <#
@@ -415,11 +415,11 @@ function Test-ApprovalIntegrity {
     $roleIdSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($id in @($RolePrivilegedUserIds | Where-Object { $_ })) { [void]$roleIdSet.Add([string]$id) }
 
-    # Test 1: Exact user-ID overlap → Broken (same account is both approver and role holder)
+    # Test 1: Exact user-ID overlap â†’ Broken (same account is both approver and role holder)
     $directOverlap = @($approverIds | Where-Object { $roleIdSet.Contains($_) })
     if ($directOverlap.Count -gt 0) { return 'Broken' }
 
-    # Test 2: Heuristic alias match → Broken (same person via alternate account)
+    # Test 2: Heuristic alias match â†’ Broken (same person via alternate account)
     foreach ($upn in @($RolePrivilegedUpns | Where-Object { $_ })) {
         $roleAlias = ($upn -split '@')[0] -replace $prefixPattern, ''
         if ($roleAlias.Length -gt 2 -and $approverAliases.Contains($roleAlias.ToLowerInvariant())) {
@@ -427,7 +427,7 @@ function Test-ApprovalIntegrity {
         }
     }
 
-    # Test 3: Approver is itself a privileged user → Weak (separation of duty concern)
+    # Test 3: Approver is itself a privileged user â†’ Weak (separation of duty concern)
     $privilegedApprovers = @($effectiveProfiles | Where-Object { $_.IsPrivileged -eq $true })
     if ($privilegedApprovers.Count -gt 0) { return 'Weak' }
 
@@ -439,7 +439,7 @@ function Test-ApprovalIntegrity {
     return 'Strong'
 }
 
-# ─── High-risk findings generator ────────────────────────────────────────────
+# â”€â”€â”€ High-risk findings generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Add-ApprovalFindings {
     <#
@@ -452,7 +452,7 @@ function Add-ApprovalFindings {
         [string]$RoleName,
         [object[]]$ApproverProfiles,
         [string]$ApprovalIntegrity,
-        [System.Collections.Generic.List[object]]$FindingsList
+        [System.Collections.ArrayList]$FindingsList
     )
 
     $evidenceId = "ApprovalAnalysis_$RoleName"
@@ -461,7 +461,7 @@ function Add-ApprovalFindings {
         'Broken' {
             $effectiveCount = @($ApproverProfiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_.UserId) }).Count
             if ($effectiveCount -eq 0) {
-                $FindingsList.Add([pscustomobject]@{
+                [void]$FindingsList.Add([pscustomobject]@{
                     FindingType = 'Approval Gate Broken - No Effective Approvers'
                     RiskRating  = 'High'
                     Subject     = $RoleName
@@ -471,7 +471,7 @@ function Add-ApprovalFindings {
                 })
             }
             else {
-                $FindingsList.Add([pscustomobject]@{
+                [void]$FindingsList.Add([pscustomobject]@{
                     FindingType = 'Approval Model Allows Effective Self-Approval'
                     RiskRating  = 'High'
                     Subject     = $RoleName
@@ -484,7 +484,7 @@ function Add-ApprovalFindings {
         'Weak' {
             $privApprovers = @($ApproverProfiles | Where-Object { $_.IsPrivileged -eq $true } | Select-Object -ExpandProperty DisplayName -Unique | Select-Object -First 3)
             $privLabel     = if ($privApprovers.Count -gt 0) { ($privApprovers -join ', ') } else { 'one or more approvers' }
-            $FindingsList.Add([pscustomobject]@{
+            [void]$FindingsList.Add([pscustomobject]@{
                 FindingType = 'Approver Group Contains Privileged Users'
                 RiskRating  = 'High'
                 Subject     = $RoleName
@@ -499,7 +499,7 @@ function Add-ApprovalFindings {
     $guestApprovers = @($ApproverProfiles | Where-Object { $_.IsGuest -eq $true })
     if ($guestApprovers.Count -gt 0) {
         $guestNames = ($guestApprovers | Select-Object -ExpandProperty DisplayName -Unique | Where-Object { $_ } | Select-Object -First 3) -join ', '
-        $FindingsList.Add([pscustomobject]@{
+        [void]$FindingsList.Add([pscustomobject]@{
             FindingType = 'Approver Group Contains Guest Users'
             RiskRating  = 'Medium'
             Subject     = $RoleName
@@ -512,7 +512,7 @@ function Add-ApprovalFindings {
     # External tenant (#EXT#) approvers
     $extApprovers = @($ApproverProfiles | Where-Object { $_.UserPrincipalName -and $_.UserPrincipalName -match '#EXT#' })
     if ($extApprovers.Count -gt 0) {
-        $FindingsList.Add([pscustomobject]@{
+        [void]$FindingsList.Add([pscustomobject]@{
             FindingType = 'Approval Relies on External Tenant Identities'
             RiskRating  = 'Medium'
             Subject     = $RoleName
@@ -525,7 +525,7 @@ function Add-ApprovalFindings {
     # Unresolvable approver objects
     $unknownApprovers = @($ApproverProfiles | Where-Object { $_.ApproverObjectType -eq 'Unknown' })
     if ($unknownApprovers.Count -gt 0) {
-        $FindingsList.Add([pscustomobject]@{
+        [void]$FindingsList.Add([pscustomobject]@{
             FindingType = 'Approver Object Type Cannot Be Determined'
             RiskRating  = 'Medium'
             Subject     = $RoleName
@@ -536,7 +536,7 @@ function Add-ApprovalFindings {
     }
 }
 
-# ─── Main exported function ───────────────────────────────────────────────────
+# â”€â”€â”€ Main exported function â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-PimApproverAnalysis {
     <#
@@ -565,38 +565,38 @@ function Get-PimApproverAnalysis {
 
     $namingPrefix = if ($Config.ContainsKey('NamingCompliancePrefix') -and -not [string]::IsNullOrWhiteSpace($Config.NamingCompliancePrefix)) { $Config.NamingCompliancePrefix } else { 'CLAD_' }
 
-    # ── Per-run caches (keyed by GroupId, avoids duplicate Graph calls) ───────────
+    # â”€â”€ Per-run caches (keyed by GroupId, avoids duplicate Graph calls) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     $groupMemberCache = @{}
     $groupDetailCache = @{}
 
-    # ── Global privileged-user lookup (any role, for IsPrivileged flag) ───────────
+    # â”€â”€ Global privileged-user lookup (any role, for IsPrivileged flag) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     $privilegedUserHash = @{}
     foreach ($a in @($RoleAssignments | Where-Object { $_.PrincipalType -eq 'User' -and $_.PrincipalId })) {
         $privilegedUserHash[[string]$a.PrincipalId] = $true
     }
 
-    # ── Per-role user IDs and UPNs (for self-approval overlap detection) ─────────
+    # â”€â”€ Per-role user IDs and UPNs (for self-approval overlap detection) â”€â”€â”€â”€â”€â”€â”€â”€â”€
     $roleUserIdsMap = @{}
     $roleUpnsMap    = @{}
     foreach ($a in @($RoleAssignments | Where-Object { $_.PrincipalType -eq 'User' -and $_.PrincipalId -and $_.RoleDisplayName })) {
         $roleName = [string]$a.RoleDisplayName
         if (-not $roleUserIdsMap.ContainsKey($roleName)) {
-            $roleUserIdsMap[$roleName] = New-Object 'System.Collections.Generic.List[string]'
-            $roleUpnsMap[$roleName]    = New-Object 'System.Collections.Generic.List[string]'
+            $roleUserIdsMap[$roleName] = [System.Collections.ArrayList]::new()
+            $roleUpnsMap[$roleName]    = [System.Collections.ArrayList]::new()
         }
-        $roleUserIdsMap[$roleName].Add([string]$a.PrincipalId)
+        [void]$roleUserIdsMap[$roleName].Add([string]$a.PrincipalId)
         if ($a.PrincipalUserPrincipalName) {
-            $roleUpnsMap[$roleName].Add([string]$a.PrincipalUserPrincipalName)
+            [void]$roleUpnsMap[$roleName].Add([string]$a.PrincipalUserPrincipalName)
         }
     }
 
-    # ── Filter to approval-required roles only ────────────────────────────────────
+    # â”€â”€ Filter to approval-required roles only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     $approvalRules = @($PolicyFlatRules | Where-Object { $_.IsApprovalRequired -eq $true })
     Write-PimLog -Message "Approver analysis: $($approvalRules.Count) role(s) with approval configured."
 
-    $analysisRows = New-Object System.Collections.Generic.List[object]
-    $profileRows  = New-Object System.Collections.Generic.List[object]
-    $findingsList = New-Object System.Collections.Generic.List[object]
+    $analysisRows = [System.Collections.ArrayList]::new()
+    $profileRows  = [System.Collections.ArrayList]::new()
+    $findingsList = [System.Collections.ArrayList]::new()
 
     foreach ($rule in $approvalRules) {
         $roleName             = if ($rule.RoleName) { [string]$rule.RoleName } else { '' }
@@ -607,7 +607,7 @@ function Get-PimApproverAnalysis {
 
         # Handle zero-approver case
         if ([string]::IsNullOrWhiteSpace($approverIds)) {
-            $analysisRows.Add([pscustomobject]@{
+            [void]$analysisRows.Add([pscustomobject]@{
                 RoleName          = $roleName
                 ApproverType      = 'None'
                 GroupName         = $null
@@ -618,7 +618,7 @@ function Get-PimApproverAnalysis {
                 ApprovalIntegrity = 'Broken'
                 RiskRating        = 'High'
             })
-            $findingsList.Add([pscustomobject]@{
+            [void]$findingsList.Add([pscustomobject]@{
                 FindingType = 'Approval Configured Without Approvers'
                 RiskRating  = 'High'
                 Subject     = $roleName
@@ -645,7 +645,7 @@ function Get-PimApproverAnalysis {
             Write-PimLog -Level WARN -Message "Failed to resolve approver profiles for role '$roleName': $($_.Exception.Message)"
         }
 
-        foreach ($p in $profiles) { $profileRows.Add($p) }
+        foreach ($p in $profiles) { [void]$profileRows.Add($p) }
 
         # Test integrity against role-specific user IDs
         $roleUserIds = if ($roleUserIdsMap.ContainsKey($roleName)) { @($roleUserIdsMap[$roleName]) } else { @() }
@@ -679,7 +679,7 @@ function Get-PimApproverAnalysis {
             default    { 'Medium' }
         }
 
-        $analysisRows.Add([pscustomobject]@{
+        [void]$analysisRows.Add([pscustomobject]@{
             RoleName          = $roleName
             ApproverType      = $approverType
             GroupName         = ($groupNames -join '; ')
@@ -703,11 +703,11 @@ function Get-PimApproverAnalysis {
     $profileArr  = @($profileRows)
     $findingsArr = @($findingsList)
 
-    # ── Approver-group-centric pivot ─────────────────────────────────────────────
+    # â”€â”€ Approver-group-centric pivot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # For each distinct approver group, list every role it is configured to approve
     # and derive a flat member summary.  This produces the inverse view: "which roles
     # does EIS-PIM-Approvers approve for?" rather than "who approves for Global Admin?".
-    $groupRoleMapRows = New-Object System.Collections.Generic.List[object]
+    $groupRoleMapRows = [System.Collections.ArrayList]::new()
     $groupMembersMap  = @{}   # groupId -> List[profile rows]
     $groupRolesMap    = @{}   # groupId -> List[roleName]
     $groupMetaMap     = @{}   # groupId -> {GroupName, GroupType}
@@ -718,15 +718,15 @@ function Get-PimApproverAnalysis {
 
         if (-not $groupMetaMap.ContainsKey($gid)) {
             $groupMetaMap[$gid]  = @{ GroupName = [string]$p.GroupName; GroupType = [string]$p.GroupType }
-            $groupRolesMap[$gid] = New-Object 'System.Collections.Generic.List[string]'
-            $groupMembersMap[$gid] = New-Object 'System.Collections.Generic.List[object]'
+            $groupRolesMap[$gid] = [System.Collections.ArrayList]::new()
+            $groupMembersMap[$gid] = [System.Collections.ArrayList]::new()
         }
         if ($p.RoleName -and -not $groupRolesMap[$gid].Contains([string]$p.RoleName)) {
-            $groupRolesMap[$gid].Add([string]$p.RoleName)
+            [void]$groupRolesMap[$gid].Add([string]$p.RoleName)
         }
         # Only add member rows that have a real UserId (not sentinel empty-group rows)
         if (-not [string]::IsNullOrWhiteSpace($p.UserId)) {
-            $groupMembersMap[$gid].Add($p)
+            [void]$groupMembersMap[$gid].Add($p)
         }
     }
 
@@ -738,7 +738,7 @@ function Get-PimApproverAnalysis {
         $guestCount   = @($uniqueMembers | Where-Object { $_.IsGuest }).Count
         $privCount    = @($uniqueMembers | Where-Object { $_.IsPrivileged }).Count
 
-        $groupRoleMapRows.Add([pscustomobject]@{
+        [void]$groupRoleMapRows.Add([pscustomobject]@{
             ApproverGroupId   = $gid
             ApproverGroupName = $meta.GroupName
             GroupType         = $meta.GroupType
@@ -769,7 +769,7 @@ function Get-PimApproverAnalysis {
     }
 }
 
-# ─── Convenience wrappers (spec-named public surface) ─────────────────────────
+# â”€â”€â”€ Convenience wrappers (spec-named public surface) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Get-RoleApprovers {
     <#
@@ -846,7 +846,7 @@ function Get-ApprovalSummary {
     return $rows
 }
 
-# ─── Script entry point ───────────────────────────────────────────────────────
+# â”€â”€â”€ Script entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if ($MyInvocation.InvocationName -ne '.') {
     Get-PimApproverAnalysis @PSBoundParameters

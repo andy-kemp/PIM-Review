@@ -1968,8 +1968,7 @@ function Invoke-FullPimReview {
                 -PolicyFlatRules  $policyRules `
                 -RoleAssignments  $roleAssignments `
                 -Config           $config `
-                -OutputFolder     $runOutputFolder `
-                -ReturnObjectsOnly
+                -OutputFolder     $runOutputFolder
 
             if ($null -ne $approverAnalysisResult) {
                 # Patch every elevation matrix policy object with ApprovalIntegrity and GroupType
