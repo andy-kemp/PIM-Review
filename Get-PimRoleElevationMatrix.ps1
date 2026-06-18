@@ -201,6 +201,72 @@ function Get-ControlMaturityLabel {
     return 'Critical Gap'
 }
 
+function Get-ControlStrength {
+    <#
+    .SYNOPSIS
+    Classifies the overall control strength for a role as Strong, Moderate, or Weak.
+
+    Strong   : MFA required, effective approval (>= 1 approver), duration <= 8h, no permanent active assignment.
+    Moderate : Core controls present but with a residual gap (e.g. long duration, permanent eligible assignment).
+    Weak     : Missing MFA, missing effective approval, duration > 24h, or permanent active assignment exists.
+    #>
+    [CmdletBinding()]
+    param(
+        [bool]$MfaRequired,
+        [bool]$ApprovalRequired,
+        [int]$ApproverCount,
+        [AllowNull()][object]$MaxActivationDurationHours,
+        [bool]$HasPermanentEligibleAssignment,
+        [bool]$HasPermanentActiveAssignment,
+        [string]$RoleCriticalityTier
+    )
+
+    $effectiveApproval = $ApprovalRequired -and $ApproverCount -gt 0
+    $shortDuration     = $null -ne $MaxActivationDurationHours -and [double]$MaxActivationDurationHours -le 8
+    $veryLongDuration  = $null -ne $MaxActivationDurationHours -and [double]$MaxActivationDurationHours -gt 24
+    $isTier0           = $RoleCriticalityTier -like 'Tier0-*'
+
+    if (-not $MfaRequired)                              { return 'Weak' }
+    if (-not $effectiveApproval)                        { return 'Weak' }
+    if ($veryLongDuration)                              { return 'Weak' }
+    if ($HasPermanentActiveAssignment)                  { return 'Weak' }
+    if ($isTier0 -and $HasPermanentEligibleAssignment)  { return 'Weak' }
+    if ($shortDuration -and -not $HasPermanentEligibleAssignment) { return 'Strong' }
+    return 'Moderate'
+}
+
+function Get-ApprovalModelStrength {
+    <#
+    .SYNOPSIS
+    Assesses the quality of the approval model configured for a role.
+
+    Strong   : Approval configured, 2+ approvers, no unknown types, no self-approval risk.
+    Moderate : 1 approver, unknown approver types, or Tier-0 role with fewer than 2 approvers.
+    Weak     : Approval required but 0 approvers, or self-approval risk detected.
+    Unknown  : Approval not required - approval model quality cannot be assessed.
+    #>
+    [CmdletBinding()]
+    param(
+        [bool]$ApprovalRequired,
+        [int]$ApproverCount,
+        [bool]$HasUnknownApproverType,
+        [string[]]$GovernanceWeaknesses,
+        [string]$RoleCriticalityTier
+    )
+
+    if (-not $ApprovalRequired) { return 'Unknown' }
+    if ($ApproverCount -eq 0)   { return 'Weak' }
+
+    $hasSelfApprovalRisk = @($GovernanceWeaknesses | Where-Object { $_ -match 'self-approval' }).Count -gt 0
+    if ($hasSelfApprovalRisk) { return 'Weak' }
+
+    $isTier0 = $RoleCriticalityTier -like 'Tier0-*'
+    if ($isTier0 -and $ApproverCount -lt 2) { return 'Moderate' }
+    if ($HasUnknownApproverType)            { return 'Moderate' }
+    if ($ApproverCount -eq 1)               { return 'Moderate' }
+    return 'Strong'
+}
+
 function Get-RoleControlRiskRating {
     <#
     .SYNOPSIS
@@ -474,6 +540,22 @@ function Get-RoleElevationPolicy {
         -TicketingRequired            ([bool]$ticketingRequired)
 
     # Compact risk rationale from the first three detected gaps
+    $controlStrength = Get-ControlStrength `
+        -MfaRequired                    ([bool]$mfaRequired) `
+        -ApprovalRequired               $approvalRequired `
+        -ApproverCount                  $approverCount `
+        -MaxActivationDurationHours     $maxDurationHours `
+        -HasPermanentEligibleAssignment $hasPermanentEligible `
+        -HasPermanentActiveAssignment   $hasPermanentActive `
+        -RoleCriticalityTier            $criticalityTier
+
+    $approvalModelStrength = Get-ApprovalModelStrength `
+        -ApprovalRequired       $approvalRequired `
+        -ApproverCount          $approverCount `
+        -HasUnknownApproverType $approverInsights.HasUnknownApproverType `
+        -GovernanceWeaknesses   @($govWeaknesses) `
+        -RoleCriticalityTier    $criticalityTier
+
     $rationaleItems = @($controlGaps | Select-Object -First 3)
     $riskRationale  = if ($rationaleItems.Count -gt 0) { $rationaleItems -join '. ' } else { 'No significant control gaps detected.' }
 
@@ -499,6 +581,8 @@ function Get-RoleElevationPolicy {
         AccessReviewsEnabled           = $reviewsEnabled
         ElevationFrictionScore         = $frictionScore
         ControlMaturityLabel           = $maturityLabel
+        ControlStrength                = $controlStrength
+        ApprovalModelStrength          = $approvalModelStrength
         ControlGaps                    = ($controlGaps -join '; ')
         GovernanceWeaknesses           = ($govWeaknesses -join '; ')
         RiskRating                     = $riskRating
@@ -721,6 +805,8 @@ function ConvertTo-RoleElevationMatrixExportRows {
                 RoleCriticalityTier            = $row.RoleCriticalityTier
                 RiskRating                     = $row.RiskRating
                 ControlMaturityLabel           = $row.ControlMaturityLabel
+                ControlStrength                = $row.ControlStrength
+                ApprovalModelStrength          = $row.ApprovalModelStrength
                 ElevationFrictionScore         = $row.ElevationFrictionScore
                 AssignmentTypes                = $row.AssignmentTypes
                 MaxActivationDurationHours     = $row.MaxActivationDurationHours

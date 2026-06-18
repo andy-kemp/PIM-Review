@@ -28,6 +28,7 @@ param(
     [switch]$IncludeApprovalHistory,
     [switch]$IncludeLicenseDetails,
     [switch]$IncludePimForGroups,
+    [switch]$IncludeAuthStrength,
     [switch]$InstallImportExcelIfMissing,
     [switch]$PromptToInstallImportExcel,
     [switch]$DisableTranscript
@@ -48,6 +49,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimApprovalData.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimAdvancedRiskData.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimRoleElevationMatrix.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimIdentityAnalysis.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-PimReviewWorkbook.ps1')
 
 function Get-PimConfig {
@@ -99,6 +101,8 @@ function Get-PimConfig {
         LongActivationThresholdHours  = [double]$cfg.LongActivationThresholdHours
         HighImpactRoles               = @($cfg.HighImpactRoles)
         ExpectedLicenseSkuPartNumbers = @($cfg.ExpectedLicenseSkuPartNumbers)
+        NamingCompliancePrefix        = if ($null -ne $cfg.NamingCompliancePrefix -and -not [string]::IsNullOrWhiteSpace($cfg.NamingCompliancePrefix)) { [string]$cfg.NamingCompliancePrefix } else { 'CLAD_' }
+        IncludeAuthStrength           = if ($null -ne $cfg.IncludeAuthStrength) { [bool]$cfg.IncludeAuthStrength } else { $false }
     }
 }
 
@@ -329,7 +333,27 @@ function New-PimSummaryReport {
 
         [object[]]$ExecutiveScorecard,
 
-        [object[]]$RoleElevationMatrix
+        [object[]]$RoleElevationMatrix,
+
+        [object[]]$PrivilegeConcentration,
+
+        [object[]]$GroupRiskProfiles,
+
+        [object]$JitEffectiveness,
+
+        [string[]]$KeyInsights,
+
+        [object[]]$GuestPrivilegedAccounts,
+
+        [object[]]$NamingCompliance,
+
+        [object[]]$LicensedPrivilegedAccounts,
+
+        [object[]]$IdentityAssuranceProfiles,
+
+        [object[]]$AuthStrengthData,
+
+        [object[]]$CACoverage
     )
 
 
@@ -553,7 +577,17 @@ function New-PimSummaryReport {
     $lines += '- 13.0 Technical Risk Findings Register - Full Evidence Set'
     $lines += '- 14.0 RAG Status Indicators - Governance Traffic Light Position'
     $lines += '- 15.0 Governance Improvement Roadmap - Prioritised Recommendations'
-    $lines += '- 16.0 Privileged Role Elevation Control Matrix - Per-Role Activation Control Assessment'
+    $lines += '- 16.0 Key Security Insights'
+    $lines += '- 17.0 Privilege Concentration Analysis'
+    $lines += '- 18.0 Group Risk Classification'
+    $lines += '- 19.0 JIT Effectiveness Summary'
+    $lines += '- 20.0 Privileged Role Elevation Control Matrix - Per-Role Activation Control Assessment'
+    $lines += '- 21.0 Guest Privileged Accounts'
+    $lines += '- 22.0 Naming Convention Compliance'
+    $lines += '- 23.0 Licensed Privileged Accounts'
+    $lines += '- 24.0 Identity Assurance Profile'
+    $lines += '- 25.0 Authentication Strength Analysis'
+    $lines += '- 26.0 Conditional Access Coverage by Role'
     $lines += ''
     $lines += '## 1.0 Assessment Engagement Context'
     $lines += ''
@@ -694,7 +728,7 @@ function New-PimSummaryReport {
     $html += '<head>'
     $html += '<meta charset="utf-8" />'
     $html += '<title>Privileged Identity Management Assessment Report</title>'
-    $html += '<style>body{font-family:Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#222}h1{font-size:32px;margin-bottom:8px}h2{font-size:22px;margin-top:26px;margin-bottom:10px;border-bottom:1px solid #e3e3e3;padding-bottom:4px}h3{font-size:18px;margin-top:18px;margin-bottom:8px}.cover{border:2px solid #1f4e78;padding:20px;border-radius:8px;background:#f7fbff;margin-bottom:18px}.meta{margin:6px 0}.summary-card{border:2px solid #cfd8e3;padding:16px 18px;border-radius:8px;background:#fcfdff;margin-bottom:24px}.summary-title{font-size:20px;font-weight:700;margin-bottom:8px}.summary-line{margin:4px 0}.section-context{margin:8px 0 10px 0;color:#3f4f61;font-style:italic}.section-intro{margin:8px 0 12px 0;color:#2c3e50;font-size:13px;line-height:1.6}.tl-dot{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:8px;vertical-align:middle;border:1px solid rgba(0,0,0,.2)}.tl-green{background:#2e7d32}.tl-amber{background:#ff8f00}.tl-red{background:#c62828}.status-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}.status-text-green{color:#2e7d32;font-weight:700}.status-text-amber{color:#ff8f00;font-weight:700}.status-text-red{color:#c62828;font-weight:700}.section-band{border-radius:8px;padding:12px 16px;margin:22px 0 12px 0;border:1px solid transparent}.section-band h2{margin:0;border-bottom:none;padding-bottom:0;color:#fff}.band-green{background:#2e7d32;border-color:#1b5e20}.band-amber{background:#ff8f00;border-color:#ef6c00}.band-red{background:#c62828;border-color:#8e0000}.section-break{page-break-before:always}ul{margin-top:0}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f4f6f8;text-align:left}.toc li{margin:4px 0}</style>'
+    $html += '<style>body{font-family:Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#222}h1{font-size:32px;margin-bottom:8px}h2{font-size:22px;margin-top:26px;margin-bottom:10px;border-bottom:1px solid #e3e3e3;padding-bottom:4px}h3{font-size:18px;margin-top:18px;margin-bottom:8px}.cover{border:2px solid #1f4e78;padding:20px;border-radius:8px;background:#f7fbff;margin-bottom:18px}.meta{margin:6px 0}.summary-card{border:2px solid #cfd8e3;padding:16px 18px;border-radius:8px;background:#fcfdff;margin-bottom:24px}.summary-title{font-size:20px;font-weight:700;margin-bottom:8px}.summary-line{margin:4px 0}.section-context{margin:8px 0 10px 0;color:#3f4f61;font-style:italic}.section-intro{margin:8px 0 12px 0;color:#2c3e50;font-size:13px;line-height:1.6}.tl-dot{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:8px;vertical-align:middle;border:1px solid rgba(0,0,0,.2)}.tl-green{background:#2e7d32}.tl-amber{background:#ff8f00}.tl-red{background:#c62828}.status-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}.status-text-green{color:#2e7d32;font-weight:700}.status-text-amber{color:#ff8f00;font-weight:700}.status-text-red{color:#c62828;font-weight:700}.section-band{border-radius:8px;padding:12px 16px;margin:22px 0 12px 0;border:1px solid transparent}.section-band h2{margin:0;border-bottom:none;padding-bottom:0;color:#fff}.band-green{background:#2e7d32;border-color:#1b5e20}.band-amber{background:#ff8f00;border-color:#ef6c00}.band-red{background:#c62828;border-color:#8e0000}.section-break{page-break-before:always}ul{margin-top:0}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f4f6f8;text-align:left}.toc li{margin:4px 0}.pillar-header{background:#1f4e78;color:#fff;padding:10px 16px;border-radius:6px;font-size:15px;font-weight:700;margin:30px 0 14px 0;letter-spacing:.4px}.insight-item{background:#f0f7ff;border-left:4px solid #1f4e78;padding:10px 16px;margin:6px 0;border-radius:0 6px 6px 0;font-size:13px;line-height:1.55}.cs-strong{color:#2e7d32;font-weight:700}.cs-moderate{color:#e65100;font-weight:700}.cs-weak{color:#b71c1c;font-weight:700}.cs-unknown{color:#555}.badge-critical{background:#b71c1c;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-high{background:#c62828;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-medium{background:#e65100;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-low{background:#2e7d32;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}</style>'
     $html += '</head>'
     $html += '<body>'
     $html += '<div class="cover">'
@@ -706,11 +740,44 @@ function New-PimSummaryReport {
     $html += "<div class=""meta""><strong>Report Identifier:</strong> PIM-$($TenantProfile.TenantLabel)-$assessmentDate</div>"
     $html += '</div>'
 
+    # ── Executive Summary card ────────────────────────────────────────────────────
     $html += '<div class="summary-card">'
     $html += '<div class="summary-title">Executive Summary</div>'
-    $html += "<div class=""summary-line""><span class=""tl-dot $trafficLightClass""></span><strong>Overall assurance colour rating:</strong> <span class=""status-pill $trafficLightClass"">$trafficLightColourName</span></div>"
-    $html += "<div class=""summary-line""><strong>Summary statement:</strong> $([System.Net.WebUtility]::HtmlEncode($executiveSummaryStatement))</div>"
-    $html += "<div class=""summary-line""><strong>Overall score (0-100):</strong> $overallScore</div>"
+    $html += "<div class=""summary-line""><span class=""tl-dot $trafficLightClass""></span><strong>Overall assurance colour rating:</strong> <span class=""status-pill $trafficLightClass"">$trafficLightColourName</span>&nbsp;&nbsp;<strong>Score:</strong> $overallScore / 100</div>"
+    $html += "<div class=""summary-line"" style=""margin:8px 0 12px 0;"">$([System.Net.WebUtility]::HtmlEncode($executiveSummaryStatement))</div>"
+    $html += '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px">'
+    $html += '<thead><tr style="background:#f4f6f8"><th style="padding:6px 10px;border:1px solid #ddd;text-align:left">Area</th><th style="padding:6px 10px;border:1px solid #ddd;text-align:left">Finding</th><th style="padding:6px 10px;border:1px solid #ddd;text-align:left">Status</th></tr></thead><tbody>'
+    $findingStatusClass = if ($highCount -gt 0) { 'tl-red' } elseif ($mediumCount -gt 0) { 'tl-amber' } else { 'tl-green' }
+    $findingStatusLabel = if ($highCount -gt 0) { 'Requires action' } elseif ($mediumCount -gt 0) { 'Monitor' } else { 'On track' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Risk Findings</td><td style='padding:5px 10px;border:1px solid #ddd'>$highCount High, $mediumCount Medium, $lowCount Low findings identified</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $findingStatusClass'>$findingStatusLabel</span></td></tr>"
+    $matrixStatusClass = if ($matrixCritical -gt 0) { 'tl-red' } elseif ($matrixHigh -gt 0) { 'tl-amber' } else { 'tl-green' }
+    $matrixStatusLabel = if ($matrixCritical -gt 0) { 'Critical gaps' } elseif ($matrixHigh -gt 0) { 'Gaps present' } else { 'Controlled' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Elevation Control Matrix</td><td style='padding:5px 10px;border:1px solid #ddd'>$($matrixRows.Count) roles: $matrixCritical Critical, $matrixHigh High, $matrixMedium Medium, $matrixLow Low</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $matrixStatusClass'>$matrixStatusLabel</span></td></tr>"
+    $gaExStatusClass = if ($gaValue -le 5) { 'tl-green' } elseif ($gaValue -le 9) { 'tl-amber' } else { 'tl-red' }
+    $gaExStatusLabel = if ($gaValue -le 5) { 'Within target' } elseif ($gaValue -le 9) { 'Near threshold' } else { 'Exceeds target' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Global Administrator Exposure</td><td style='padding:5px 10px;border:1px solid #ddd'>$gaValue reachable users (target: &le;5)</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $gaExStatusClass'>$gaExStatusLabel</span></td></tr>"
+    $bgExStatusClass = if ($bgValue -eq 2) { 'tl-green' } else { 'tl-amber' }
+    $bgExStatusLabel = if ($bgValue -eq 2) { 'On target' } else { 'Review required' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Break-Glass Accounts</td><td style='padding:5px 10px;border:1px solid #ddd'>$bgValue detected (target: 2)</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $bgExStatusClass'>$bgExStatusLabel</span></td></tr>"
+    $caExStatusClass = if ($caPoliciesNoMfa -eq 0) { 'tl-green' } elseif ($caPoliciesNoMfa -le 3) { 'tl-amber' } else { 'tl-red' }
+    $caExStatusLabel = if ($caPoliciesNoMfa -eq 0) { 'No gaps' } else { 'Gaps present' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Conditional Access (MFA)</td><td style='padding:5px 10px;border:1px solid #ddd'>$caPoliciesNoMfa enabled policies without MFA grant control</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $caExStatusClass'>$caExStatusLabel</span></td></tr>"
+    $sodExStatusClass = if ($sodHigh -eq 0) { 'tl-green' } elseif ($sodHigh -le 5) { 'tl-amber' } else { 'tl-red' }
+    $sodExStatusLabel = if ($sodHigh -eq 0) { 'No conflicts' } elseif ($sodHigh -le 5) { 'Review required' } else { 'Urgent action' }
+    $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Segregation of Duties</td><td style='padding:5px 10px;border:1px solid #ddd'>$sodHigh high-risk role conflicts detected</td><td style='padding:5px 10px;border:1px solid #ddd'><span class='status-pill $sodExStatusClass'>$sodExStatusLabel</span></td></tr>"
+    $html += '</tbody></table>'
+    $topHighFindings = @($Findings | Where-Object { $_.RiskRating -eq 'High' } | Group-Object -Property FindingType | Sort-Object -Property Count -Descending | Select-Object -First 3)
+    if ($topHighFindings.Count -gt 0) {
+        $html += '<p style="margin:4px 0 2px 0"><strong>Most prevalent high-risk finding types:</strong></p>'
+        $html += '<ul style="margin:0 0 8px 22px">'
+        foreach ($tf in $topHighFindings) {
+            $sfLabel = [System.Net.WebUtility]::HtmlEncode($tf.Name)
+            $sfCount = $tf.Count
+            $sfS     = if ($sfCount -ne 1) { 's' } else { '' }
+            $html += "<li>$sfLabel ($sfCount instance$sfS)</li>"
+        }
+        $html += '</ul>'
+    }
     $html += '</div>'
 
     $html += '<h2>Section Index</h2>'
@@ -730,7 +797,17 @@ function New-PimSummaryReport {
     $html += '<li>13.0 Technical Risk Findings Register - Full Evidence Set</li>'
     $html += '<li>14.0 RAG Status Indicators - Governance Traffic Light Position</li>'
     $html += '<li>15.0 Governance Improvement Roadmap - Prioritised Recommendations</li>'
-    $html += '<li>16.0 Privileged Role Elevation Control Matrix - Per-Role Activation Control Assessment</li>'
+    $html += '<li>16.0 Key Security Insights</li>'
+    $html += '<li>17.0 Privilege Concentration Analysis</li>'
+    $html += '<li>18.0 Group Risk Classification</li>'
+    $html += '<li>19.0 JIT Effectiveness Summary</li>'
+    $html += '<li>20.0 Privileged Role Elevation Control Matrix &#8212; Per-Role Activation Control Assessment</li>'
+    $html += '<li>21.0 Guest Privileged Accounts</li>'
+    $html += '<li>22.0 Naming Convention Compliance</li>'
+    $html += '<li>23.0 Licensed Privileged Accounts</li>'
+    $html += '<li>24.0 Identity Assurance Profile</li>'
+    $html += '<li>25.0 Authentication Strength Analysis</li>'
+    $html += '<li>26.0 Conditional Access Coverage by Role</li>'
     $html += '</ul>'
 
     $html += '<h2>1.0 Assessment Engagement Context</h2>'
@@ -857,8 +934,112 @@ function New-PimSummaryReport {
     if ($highCount -gt 0) {
         $html += "<li>Priority 3: Triage and close $highCount high-risk findings first, then tackle medium findings in a 30/60/90-day plan.</li>"
     }
-    # ── Section 16.0 — Privileged Role Elevation Control Matrix ──────────────────
-    $html += '<h2 class="section-break">16.0 Privileged Role Elevation Control Matrix &#8212; Per-Role Activation Control Assessment</h2>'
+    $html += '</ul>'
+
+    # ── Section 16.0 — Key Security Insights ─────────────────────────────────────
+    $html += '<h2>16.0 Key Security Insights</h2>'
+    $html += '<p class="section-intro">The following insights are automatically derived from patterns in the collected data. Each insight identifies a systemic governance condition that warrants management attention beyond a single isolated finding.</p>'
+    $insightList = if ($null -ne $KeyInsights -and @($KeyInsights).Count -gt 0) { @($KeyInsights) } else { @() }
+    if ($insightList.Count -gt 0) {
+        foreach ($insight in $insightList) {
+            $safeInsight = [System.Net.WebUtility]::HtmlEncode([string]$insight)
+            $html += "<div class='insight-item'>$safeInsight</div>"
+        }
+    }
+    else {
+        $html += '<p>No key insights were generated for this run. Ensure role elevation matrix data is available.</p>'
+    }
+
+    # ── Section 17.0 — Privilege Concentration Analysis ──────────────────────────
+    $html += '<h2>17.0 Privilege Concentration Analysis</h2>'
+    $html += '<p class="section-intro">This section profiles the privilege breadth of each user across both direct and group-inherited access paths. Users exceeding 10 roles are flagged as high-privilege; users meeting Tier-0 role combination thresholds are flagged as approaching super-administrator equivalence. A super-admin equivalent user represents a critical single point of compromise.</p>'
+    $concRows = if ($null -ne $PrivilegeConcentration -and @($PrivilegeConcentration).Count -gt 0) { @($PrivilegeConcentration) } else { @() }
+    if ($concRows.Count -gt 0) {
+        $superCount = @($concRows | Where-Object { $_.IsSuperAdminEquivalent -eq $true }).Count
+        $heavyCount = @($concRows | Where-Object { $_.TotalDistinctRoles -gt 10 }).Count
+        $maxRoleVal = ($concRows | Measure-Object -Property TotalDistinctRoles -Maximum).Maximum
+        $html += "<p><strong>Total privileged users analysed:</strong> $($concRows.Count) &nbsp; <strong>Super-admin equivalent:</strong> $superCount &nbsp; <strong>Heavy-privilege (&gt;10 roles):</strong> $heavyCount &nbsp; <strong>Max roles (single user):</strong> $maxRoleVal</p>"
+        $html += '<table>'
+        $html += '<thead><tr><th>User</th><th>UPN</th><th>Category</th><th>Total Roles</th><th>Direct</th><th>Inherited</th><th>High-Impact</th><th>Tier-0</th><th>Global Admin</th><th>Super-Admin Equiv</th><th>Concentration Risk</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($cr in @($concRows | Select-Object -First 50)) {
+            if ($cr.ConcentrationRisk -eq 'Critical') { $crBg = '#ffcdd2' } elseif ($cr.ConcentrationRisk -eq 'High') { $crBg = '#ffebee' } elseif ($cr.ConcentrationRisk -eq 'Medium') { $crBg = '#fff8e1' } else { $crBg = '#f1f8e9' }
+            $gaLabel  = if ($cr.IsGlobalAdmin)          { 'Yes' } else { 'No' }
+            $saLabel  = if ($cr.IsSuperAdminEquivalent) { '<strong>Yes</strong>' } else { 'No' }
+            if ($cr.ConcentrationRisk -eq 'Critical') { $crClass = 'badge-critical' } elseif ($cr.ConcentrationRisk -eq 'High') { $crClass = 'badge-high' } elseif ($cr.ConcentrationRisk -eq 'Medium') { $crClass = 'badge-medium' } else { $crClass = 'badge-low' }
+            $html += "<tr style='background:$crBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($cr.UserDisplayName))</strong></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$cr.UserPrincipalName))</td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$cr.UserCategory))</td>"
+            $html += "<td><strong>$($cr.TotalDistinctRoles)</strong></td>"
+            $html += "<td>$($cr.DirectRoleCount)</td><td>$($cr.InheritedRoleCount)</td><td>$($cr.HighImpactRoleCount)</td><td>$($cr.Tier0RoleCount)</td>"
+            $html += "<td>$gaLabel</td><td>$saLabel</td>"
+            $html += "<td><span class='$crClass'>$([System.Net.WebUtility]::HtmlEncode($cr.ConcentrationRisk))</span></td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+        if ($concRows.Count -gt 50) { $html += "<p style='font-size:12px;color:#555'>Showing top 50 of $($concRows.Count) users. Full data available in the Excel workbook (sheet 23_Privilege_Concentration).</p>" }
+    }
+    else {
+        $html += '<p>No privilege concentration data is available for this run.</p>'
+    }
+
+    # ── Section 18.0 — Group Risk Classification ─────────────────────────────────
+    $html += '<h2>18.0 Group Risk Classification</h2>'
+    $html += '<p class="section-intro">Each role-assignable group is assessed for the risk it introduces into the privilege surface. Groups rated Critical combine high-impact roles with embedded Segregation of Duties conflicts: any member simultaneously inherits mutually exclusive privileges. Groups rated High hold high-impact roles or include guest members. Risk ratings are derived automatically from the group role set and membership composition.</p>'
+    $grpRows = if ($null -ne $GroupRiskProfiles -and @($GroupRiskProfiles).Count -gt 0) { @($GroupRiskProfiles) } else { @() }
+    if ($grpRows.Count -gt 0) {
+        $grpCritCount = @($grpRows | Where-Object { $_.GroupRiskRating -eq 'Critical' }).Count
+        $grpHighCount = @($grpRows | Where-Object { $_.GroupRiskRating -eq 'High'     }).Count
+        $grpSodCount  = @($grpRows | Where-Object { $_.HasSoDConflict  -eq $true      }).Count
+        $html += "<p><strong>Total groups:</strong> $($grpRows.Count) &nbsp; <strong>Critical:</strong> $grpCritCount &nbsp; <strong>High:</strong> $grpHighCount &nbsp; <strong>Embedded SoD conflicts:</strong> $grpSodCount</p>"
+        $html += '<table>'
+        $html += '<thead><tr><th>Group</th><th>Total Roles</th><th>High-Impact</th><th>SoD Conflict</th><th>User Members</th><th>Guests</th><th>Nested Groups</th><th>Risk Rating</th><th>Risk Rationale</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($gr in $grpRows) {
+            if ($gr.GroupRiskRating -eq 'Critical') { $grBg = '#ffcdd2' } elseif ($gr.GroupRiskRating -eq 'High') { $grBg = '#ffebee' } elseif ($gr.GroupRiskRating -eq 'Medium') { $grBg = '#fff8e1' } else { $grBg = '#f1f8e9' }
+            if ($gr.GroupRiskRating -eq 'Critical') { $grClass = 'badge-critical' } elseif ($gr.GroupRiskRating -eq 'High') { $grClass = 'badge-high' } elseif ($gr.GroupRiskRating -eq 'Medium') { $grClass = 'badge-medium' } else { $grClass = 'badge-low' }
+            $sodLabel = if ($gr.HasSoDConflict -eq $true) { '<strong style="color:#b71c1c">Yes</strong>' } else { 'No' }
+            $html += "<tr style='background:$grBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($gr.GroupDisplayName))</strong></td>"
+            $html += "<td>$($gr.DistinctRoleCount)</td><td>$($gr.HighImpactRoleCount)</td><td>$sodLabel</td>"
+            $html += "<td>$($gr.DirectUserMemberCount)</td><td>$($gr.GuestMemberCount)</td><td>$($gr.NestedGroupMemberCount)</td>"
+            $html += "<td><span class='$grClass'>$([System.Net.WebUtility]::HtmlEncode($gr.GroupRiskRating))</span></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$gr.GroupRiskWhy))</td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p>No group risk profile data is available for this run.</p>'
+    }
+
+    # ── Section 19.0 — JIT Effectiveness Summary ─────────────────────────────────
+    $html += '<h2>19.0 JIT Effectiveness Summary</h2>'
+    $html += '<p class="section-intro">The JIT Effectiveness Score (0-100) measures how consistently Just-In-Time access controls are applied across all analysed privileged roles. Score weights: MFA 35%, Approval 30%, Duration &le;8h 20%, Permanent eligibility penalty 15%. A score below 60 indicates the JIT model requires structural improvement.</p>'
+    if ($null -ne $JitEffectiveness) {
+        $jitScore  = $JitEffectiveness.JITEffectivenessScore
+        $jitRating = $JitEffectiveness.JITEffectivenessRating
+        if ($jitRating -eq 'Strong') { $jitClass = 'tl-green' } elseif ($jitRating -eq 'Moderate') { $jitClass = 'tl-amber' } else { $jitClass = 'tl-red' }
+        $html += "<p><strong>JIT Effectiveness Score: $jitScore / 100</strong> &nbsp; <span class='status-pill $jitClass'>$jitRating</span></p>"
+        $html += '<table style="width:62%;margin-bottom:12px">'
+        $html += '<thead><tr style="background:#f4f6f8"><th style="padding:5px 10px;border:1px solid #ddd">Control</th><th style="padding:5px 10px;border:1px solid #ddd">Roles</th><th style="padding:5px 10px;border:1px solid #ddd">Coverage (%)</th></tr></thead>'
+        $html += '<tbody>'
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>MFA Required</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithMfa) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctMfaRequired)%</td></tr>"
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Approval Required (with approvers)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithApproval) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctApprovalRequired)%</td></tr>"
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Duration &le;8h</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithShortDuration) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctShortDuration)%</td></tr>"
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Permanent Eligible Assignments</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithPermanentEligible) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctPermanentEligible)%</td></tr>"
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Strong Control Posture</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithStrongControl) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctStrongControl)%</td></tr>"
+        $html += "<tr><td style='padding:5px 10px;border:1px solid #ddd'>Weak Control Posture</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.RolesWithWeakControl) of $($JitEffectiveness.TotalRolesAnalysed)</td><td style='padding:5px 10px;border:1px solid #ddd'>$($JitEffectiveness.PctWeakControl)%</td></tr>"
+        $html += '</tbody></table>'
+        $html += "<p class='section-intro'>$([System.Net.WebUtility]::HtmlEncode([string]$JitEffectiveness.Insight))</p>"
+    }
+    else {
+        $html += '<p>JIT effectiveness data is not available for this run. Ensure the Role Elevation Matrix was collected successfully.</p>'
+    }
+
+    # ── Section 20.0 — Privileged Role Elevation Control Matrix ──────────────────
+    $html += '<h2>20.0 Privileged Role Elevation Control Matrix &#8212; Per-Role Activation Control Assessment</h2>'
     $html += '<p class="section-intro">This appendix maps every assigned privileged role to its PIM activation policy settings and derives an objective risk posture for each one. The <strong>Elevation Friction Score</strong> (0&#8211;100) measures how many JIT controls a user must pass before activating the role. The <strong>Risk Rating</strong> combines role criticality tier with the specific control gaps identified. Roles rated Critical or High should be prioritised for immediate policy remediation.</p>'
     $html += '<ul>'
     $html += '<li><strong>Elevation Friction Score (0-100):</strong> +40 MFA required, +30 Approval with approvers configured, +20 Max duration &lt;= 8 hours, +10 Justification required. Higher = stronger JIT governance.</li>'
@@ -873,7 +1054,7 @@ function New-PimSummaryReport {
 
     if ($matrixRows.Count -gt 0) {
         $html += '<table>'
-        $html += '<thead><tr><th>Role Name</th><th>Criticality</th><th>High Impact</th><th>Assignment Type</th><th>MFA</th><th>Approval</th><th>Approver Type</th><th>Approvers</th><th>Approver Details</th><th>Max Duration (h)</th><th>Justification</th><th>Ticketing</th><th>Friction Score</th><th>Maturity</th><th>Risk Rating</th><th>Control Gaps</th><th>Access Reviews</th></tr></thead>'
+        $html += '<thead><tr><th>Role Name</th><th>Criticality</th><th>High Impact</th><th>Assignment Type</th><th>MFA</th><th>Approval</th><th>Approver Type</th><th>Approvers</th><th>Approver Details</th><th>Max Duration (h)</th><th>Justification</th><th>Ticketing</th><th>Friction Score</th><th>Maturity</th><th>Control Strength</th><th>Approval Model</th><th>Risk Rating</th><th>Control Gaps</th><th>Access Reviews</th></tr></thead>'
         $html += '<tbody>'
         foreach ($m in $matrixRows) {
             $rowBg = switch ($m.RiskRating) {
@@ -910,6 +1091,11 @@ function New-PimSummaryReport {
             $html += "<td>$([System.Net.WebUtility]::HtmlEncode($m.ControlMaturityLabel))</td>"
             $html += "<td style=""$ratingStyle"">$([System.Net.WebUtility]::HtmlEncode($m.RiskRating))</td>"
             $html += "<td style=""font-size:12px"">$gapsEnc</td><td>$revLabel</td>"
+            $csStrLabel = if ($m.ControlStrength)       { [System.Net.WebUtility]::HtmlEncode([string]$m.ControlStrength)       } else { '?' }
+            $amStrLabel = if ($m.ApprovalModelStrength) { [System.Net.WebUtility]::HtmlEncode([string]$m.ApprovalModelStrength) } else { '?' }
+            if ($m.ControlStrength -eq 'Strong') { $csStrClass = 'cs-strong' } elseif ($m.ControlStrength -eq 'Moderate') { $csStrClass = 'cs-moderate' } else { $csStrClass = 'cs-weak' }
+            if ($m.ApprovalModelStrength -eq 'Strong') { $amStrClass = 'cs-strong' } elseif ($m.ApprovalModelStrength -eq 'Moderate') { $amStrClass = 'cs-moderate' } elseif ($m.ApprovalModelStrength -eq 'Weak') { $amStrClass = 'cs-weak' } else { $amStrClass = 'cs-unknown' }
+            $html += "<td><span class='$csStrClass'>$csStrLabel</span></td><td><span class='$amStrClass'>$amStrLabel</span></td>"
             $html += '</tr>'
         }
         $html += '</tbody></table>'
@@ -918,7 +1104,233 @@ function New-PimSummaryReport {
         $html += '<p>No role elevation policy data is available for this run.</p>'
     }
 
-    $html += '</ul>'
+    # ── Section 21.0 — Guest Privileged Accounts ──────────────────────────────────
+    $html += '<h2>21.0 Guest Privileged Accounts</h2>'
+    $html += '<p class="section-intro">Guest (external) identities with privileged role assignments represent a significantly elevated risk. External accounts are not managed through the organisation''s identity lifecycle controls, may not be subject to the same MFA or naming policies, and their access is frequently invisible in standard privilege reviews. Each guest access path should have a documented business justification, a defined expiry date, and be covered by a periodic access review.</p>'
+    $guestRows = if ($null -ne $GuestPrivilegedAccounts -and @($GuestPrivilegedAccounts).Count -gt 0) { @($GuestPrivilegedAccounts) } else { @() }
+    if ($guestRows.Count -gt 0) {
+        $guestCritical = @($guestRows | Where-Object { $_.GuestRiskRating -eq 'Critical' }).Count
+        $guestHigh     = @($guestRows | Where-Object { $_.GuestRiskRating -eq 'High'     }).Count
+        $html += "<p><strong>Total privileged guest accounts:</strong> $($guestRows.Count) &nbsp; <strong>Critical:</strong> $guestCritical &nbsp; <strong>High:</strong> $guestHigh</p>"
+        $html += '<table>'
+        $html += '<thead><tr><th>User</th><th>UPN</th><th>Total Roles</th><th>High-Impact</th><th>Direct Assign</th><th>Group Assign</th><th>Permanent Path</th><th>Source Groups</th><th>Risk Rating</th><th>Risk Rationale</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($gr in $guestRows) {
+            if ($gr.GuestRiskRating -eq 'Critical') { $grBg = '#ffcdd2'; $grCls = 'badge-critical' }
+            elseif ($gr.GuestRiskRating -eq 'High') { $grBg = '#ffebee'; $grCls = 'badge-high' }
+            else                                    { $grBg = '#fff8e1'; $grCls = 'badge-medium' }
+            $directLabel = if ($gr.HasDirectAssignment)  { '<strong style="color:#b71c1c">Yes</strong>' } else { 'No' }
+            $permLabel   = if ($gr.HasPermanentPath)     { '<strong style="color:#b71c1c">Yes</strong>' } else { 'No' }
+            $html += "<tr style='background:$grBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($gr.UserDisplayName))</strong></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$gr.UserPrincipalName))</td>"
+            $html += "<td>$($gr.TotalRoleCount)</td><td>$($gr.HighImpactRoleCount)</td>"
+            $html += "<td>$directLabel</td><td>$(if ($gr.HasGroupAssignment) { 'Yes' } else { 'No' })</td><td>$permLabel</td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$gr.SourceGroups))</td>"
+            $html += "<td><span class='$grCls'>$([System.Net.WebUtility]::HtmlEncode($gr.GuestRiskRating))</span></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$gr.GuestRiskWhy))</td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p style="color:#2e7d32"><strong>No guest accounts with privileged roles were detected.</strong> This is a positive control indicator.</p>'
+    }
+
+    # ── Section 22.0 — Naming Convention Compliance ────────────────────────────────
+    $html += '<h2>22.0 Naming Convention Compliance</h2>'
+    $html += "<p class='section-intro'>Dedicated privileged admin accounts should follow a defined naming convention (prefix: <strong>CLAD_</strong>) to distinguish them from everyday user accounts. Using a personal or shared account for privileged operations increases the risk of credential reuse, makes it harder to enforce account-specific controls, and reduces visibility in privilege reviews. Accounts failing this check may represent everyday accounts used for administrative access.</p>"
+    $namingRows = if ($null -ne $NamingCompliance -and @($NamingCompliance).Count -gt 0) { @($NamingCompliance) } else { @() }
+    if ($namingRows.Count -gt 0) {
+        $nonCompliantCount = @($namingRows | Where-Object { $_.IsNamingCompliant -eq $false }).Count
+        $compliantCount    = @($namingRows | Where-Object { $_.IsNamingCompliant -eq $true  }).Count
+        $html += "<p><strong>Total member accounts assessed:</strong> $($namingRows.Count) &nbsp; <strong>Compliant:</strong> $compliantCount &nbsp; <span style='color:#c62828'><strong>Non-Compliant:</strong> $nonCompliantCount</span></p>"
+        $nonCompliant = @($namingRows | Where-Object { $_.IsNamingCompliant -eq $false })
+        if ($nonCompliant.Count -gt 0) {
+            $html += '<table>'
+            $html += '<thead><tr><th>User</th><th>UPN</th><th>Category</th><th>Total Roles</th><th>Compliance Status</th><th>Risk Rating</th><th>Reason</th></tr></thead>'
+            $html += '<tbody>'
+            foreach ($nr in $nonCompliant) {
+                $html += "<tr style='background:#ffebee'>"
+                $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($nr.UserDisplayName))</strong></td>"
+                $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$nr.UserPrincipalName))</td>"
+                $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$nr.UserCategory))</td>"
+                $html += "<td>$($nr.TotalDistinctRoles)</td>"
+                $html += "<td><span class='badge-high'>Non-Compliant</span></td>"
+                $html += "<td><span class='badge-high'>$([System.Net.WebUtility]::HtmlEncode($nr.ComplianceRiskRating))</span></td>"
+                $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$nr.ComplianceReason))</td>"
+                $html += '</tr>'
+            }
+            $html += '</tbody></table>'
+        }
+        else {
+            $html += '<p style="color:#2e7d32"><strong>All privileged member accounts meet the naming convention requirement.</strong></p>'
+        }
+    }
+    else {
+        $html += '<p>Naming compliance data is not available for this run.</p>'
+    }
+
+    # ── Section 23.0 — Licensed Privileged Accounts ────────────────────────────────
+    $html += '<h2>23.0 Licensed Privileged Accounts</h2>'
+    $html += '<p class="section-intro">Privileged accounts that also hold product licenses (e.g. Microsoft 365 E5, Exchange Online) combine administrative authority with access to organisational data. A credential compromise of such an account simultaneously exposes both privileged administrative control and licensed data (mail, files, Teams, etc.). Best practice is to use dedicated, unlicensed admin accounts for privileged operations — with all licensing assigned to the user''s everyday account.</p>'
+    $licensedRows = if ($null -ne $LicensedPrivilegedAccounts -and @($LicensedPrivilegedAccounts).Count -gt 0) { @($LicensedPrivilegedAccounts) } else { @() }
+    if ($licensedRows.Count -gt 0) {
+        $licensedHighCount = @($licensedRows | Where-Object { $_.LicensedAdminRiskRating -eq 'High' }).Count
+        $html += "<p><strong>Licensed privileged accounts detected:</strong> $($licensedRows.Count) &nbsp; <strong>High risk:</strong> $licensedHighCount</p>"
+        $html += '<table>'
+        $html += '<thead><tr><th>User</th><th>UPN</th><th>Category</th><th>Total Roles</th><th>High-Impact</th><th>Licenses</th><th>License SKUs</th><th>Risk Rating</th><th>Rationale</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($lr in $licensedRows) {
+            if ($lr.LicensedAdminRiskRating -eq 'High') { $lrBg = '#ffebee'; $lrCls = 'badge-high' }
+            elseif ($lr.LicensedAdminRiskRating -eq 'Medium') { $lrBg = '#fff8e1'; $lrCls = 'badge-medium' }
+            else { $lrBg = '#f1f8e9'; $lrCls = 'badge-low' }
+            $html += "<tr style='background:$lrBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($lr.UserDisplayName))</strong></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$lr.UserPrincipalName))</td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$lr.UserCategory))</td>"
+            $html += "<td>$($lr.TotalDistinctRoles)</td><td>$($lr.HighImpactRoleCount)</td>"
+            $html += "<td>$($lr.LicenseCount)</td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$lr.FriendlyLicenseNames))</td>"
+            $html += "<td><span class='$lrCls'>$([System.Net.WebUtility]::HtmlEncode($lr.LicensedAdminRiskRating))</span></td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$lr.LicensedAdminRiskWhy))</td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p style="color:#2e7d32"><strong>No privileged accounts with active product licenses were detected.</strong> This indicates dedicated admin account hygiene is maintained.</p>'
+    }
+
+    # ── Section 24.0 — Identity Assurance Profile ─────────────────────────────────
+    $html += '<h2>24.0 Identity Assurance Profile</h2>'
+    $html += '<p class="section-intro">The Identity Assurance Profile provides a consolidated risk view for each privileged user, combining privilege breadth, account type (guest/member), naming compliance, license status, and authentication strength. The IdentityRiskRating is derived from a composite score across all risk dimensions. Users rated Critical or High should be prioritised for immediate remediation of the specific risk factors identified.</p>'
+    $iapRows = if ($null -ne $IdentityAssuranceProfiles -and @($IdentityAssuranceProfiles).Count -gt 0) { @($IdentityAssuranceProfiles) } else { @() }
+    if ($iapRows.Count -gt 0) {
+        $iapCritical = @($iapRows | Where-Object { $_.IdentityRiskRating -eq 'Critical' }).Count
+        $iapHigh     = @($iapRows | Where-Object { $_.IdentityRiskRating -eq 'High'     }).Count
+        $iapPhish    = @($iapRows | Where-Object { $_.HasPhishingResistantMfa -eq $true  }).Count
+        $html += "<p><strong>Profiles:</strong> $($iapRows.Count) &nbsp; <strong>Critical:</strong> $iapCritical &nbsp; <strong>High:</strong> $iapHigh &nbsp; <strong>Phishing-Resistant MFA:</strong> $iapPhish</p>"
+        $html += '<table>'
+        $html += '<thead><tr><th>User</th><th>UPN</th><th>Guest</th><th>Licensed</th><th>Naming OK</th><th>Auth Strength</th><th>Total Roles</th><th>High-Impact</th><th>Conc. Risk</th><th>Super-Admin</th><th>Score</th><th>Risk Rating</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($ip in @($iapRows | Select-Object -First 100)) {
+            if ($ip.IdentityRiskRating -eq 'Critical') { $ipBg = '#ffcdd2'; $ipCls = 'badge-critical' }
+            elseif ($ip.IdentityRiskRating -eq 'High')  { $ipBg = '#ffebee'; $ipCls = 'badge-high' }
+            elseif ($ip.IdentityRiskRating -eq 'Medium') { $ipBg = '#fff8e1'; $ipCls = 'badge-medium' }
+            else { $ipBg = '#f1f8e9'; $ipCls = 'badge-low' }
+            $guestLabel = if ($ip.IsGuest) { '<strong style="color:#e65100">Guest</strong>' } else { 'No' }
+            $licLabel   = if ($ip.IsLicensed) { '<strong>Yes</strong>' } else { 'No' }
+            $namingLabel = if ($ip.IsNamingCompliant) { '<span style="color:#2e7d32">OK</span>' } else { '<strong style="color:#c62828">FAIL</strong>' }
+            $saLabel    = if ($ip.IsSuperAdminEquivalent) { '<strong style="color:#b71c1c">Yes</strong>' } else { 'No' }
+            if ($ip.AuthStrength -eq 'PhishingResistant') { $authCls = 'cs-strong' }
+            elseif ($ip.AuthStrength -eq 'StandardMFA')   { $authCls = 'cs-moderate' }
+            elseif ($ip.AuthStrength -eq 'WeakOrNone')    { $authCls = 'cs-weak' }
+            else                                          { $authCls = 'cs-unknown' }
+            $html += "<tr style='background:$ipBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($ip.UserDisplayName))</strong></td>"
+            $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$ip.UserPrincipalName))</td>"
+            $html += "<td>$guestLabel</td><td>$licLabel</td><td>$namingLabel</td>"
+            $html += "<td><span class='$authCls'>$([System.Net.WebUtility]::HtmlEncode([string]$ip.AuthStrength))</span></td>"
+            $html += "<td>$($ip.TotalRoleCount)</td><td>$($ip.HighImpactRoleCount)</td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$ip.ConcentrationRisk))</td>"
+            $html += "<td>$saLabel</td><td>$($ip.IdentityRiskScore)</td>"
+            $html += "<td><span class='$ipCls'>$([System.Net.WebUtility]::HtmlEncode($ip.IdentityRiskRating))</span></td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+        if ($iapRows.Count -gt 100) { $html += "<p style='font-size:12px;color:#555'>Showing top 100 of $($iapRows.Count) profiles. Full data in workbook sheet 28_Identity_Assurance.</p>" }
+    }
+    else {
+        $html += '<p>Identity assurance profile data is not available for this run.</p>'
+    }
+
+    # ── Section 25.0 — Authentication Strength Analysis ───────────────────────────
+    $html += '<h2>25.0 Authentication Strength Analysis</h2>'
+    $html += '<p class="section-intro">This section analyses the authentication method registrations of privileged users to classify their effective MFA posture. Phishing-resistant methods (FIDO2 security keys, Windows Hello for Business) provide the strongest protection against credential attacks targeting privileged accounts. Standard MFA (Microsoft Authenticator app, OATH TOTP) provides acceptable protection but remains vulnerable to some advanced phishing techniques. Accounts with weak or no MFA registered are at critical risk of credential-based compromise.</p>'
+    $authRows = if ($null -ne $AuthStrengthData -and @($AuthStrengthData).Count -gt 0) { @($AuthStrengthData) } else { @() }
+    if ($authRows.Count -gt 0) {
+        $phishCount   = @($authRows | Where-Object { $_.AuthStrength -eq 'PhishingResistant' }).Count
+        $standardCount = @($authRows | Where-Object { $_.AuthStrength -eq 'StandardMFA'      }).Count
+        $weakCount    = @($authRows | Where-Object { $_.AuthStrength -eq 'WeakOrNone'        }).Count
+        $unknownCount = @($authRows | Where-Object { $_.AuthStrength -eq 'Unknown'           }).Count
+        $html += "<p><strong>Total privileged users analysed:</strong> $($authRows.Count) &nbsp; "
+        $html += "<span class='cs-strong'>Phishing-Resistant: $phishCount</span>&nbsp; "
+        $html += "<span class='cs-moderate'>Standard MFA: $standardCount</span>&nbsp; "
+        $html += "<span class='cs-weak'>Weak or None: $weakCount</span>&nbsp; "
+        $html += "<span class='cs-unknown'>Unknown: $unknownCount</span></p>"
+        if ($weakCount -gt 0) {
+            $html += "<div class='insight-item' style='border-left-color:#c62828'>$weakCount privileged user(s) have weak or no MFA registered. Phishing-resistant MFA should be enforced for all privileged accounts via Conditional Access Authentication Strength policies.</div>"
+        }
+        $html += '<table>'
+        $html += '<thead><tr><th>User</th><th>UPN</th><th>Auth Strength</th><th>Phishing-Resistant</th><th>Standard MFA</th><th>MFA Registered</th><th>Passwordless</th><th>Method Count</th><th>Methods</th><th>Auth Risk</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($ar in $authRows) {
+            if ($ar.AuthStrength -eq 'PhishingResistant') { $arBg = '#f1f8e9'; $arCls = 'cs-strong' }
+            elseif ($ar.AuthStrength -eq 'StandardMFA')   { $arBg = '#fff8e1'; $arCls = 'cs-moderate' }
+            elseif ($ar.AuthStrength -eq 'WeakOrNone')    { $arBg = '#ffebee'; $arCls = 'cs-weak' }
+            else                                          { $arBg = '#f5f5f5'; $arCls = 'cs-unknown' }
+            $html += "<tr style='background:$arBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode([string]$ar.UserDisplayName))</strong></td>"
+            $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$ar.UserPrincipalName))</td>"
+            $html += "<td><span class='$arCls'>$([System.Net.WebUtility]::HtmlEncode($ar.AuthStrength))</span></td>"
+            $html += "<td>$(if ($ar.HasPhishingResistantMethod) { '<span style="color:#2e7d32"><strong>Yes</strong></span>' } else { 'No' })</td>"
+            $html += "<td>$(if ($ar.HasStandardMfaMethod) { 'Yes' } else { 'No' })</td>"
+            $html += "<td>$(if ($ar.IsMfaRegistered) { 'Yes' } else { 'No' })</td>"
+            $html += "<td>$(if ($ar.IsPasswordlessCapable) { '<span style="color:#2e7d32">Yes</span>' } else { 'No' })</td>"
+            $html += "<td>$($ar.MethodCount)</td>"
+            $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$ar.MethodsRegistered))</td>"
+            if ($ar.AuthRiskRating -eq 'High') { $authRiskCls = 'badge-high' } elseif ($ar.AuthRiskRating -eq 'Medium') { $authRiskCls = 'badge-medium' } else { $authRiskCls = 'badge-low' }
+            $html += "<td><span class='$authRiskCls'>$([System.Net.WebUtility]::HtmlEncode($ar.AuthRiskRating))</span></td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p>Authentication strength data is not available. To enable this analysis, ensure the <strong>Reports.Read.All</strong> scope is consented and re-run with the <code>-IncludeAuthStrength</code> switch or set <code>IncludeAuthStrength: true</code> in the config file.</p>'
+    }
+
+    # ── Section 26.0 — Conditional Access Coverage by Role ────────────────────────
+    $html += '<h2>26.0 Conditional Access Coverage by Role</h2>'
+    $html += '<p class="section-intro">This section maps each privileged role to the set of enabled Conditional Access policies that apply to it. Roles not covered by any enabled CA policy, or covered only by policies without an MFA grant control, represent the highest-risk exposure surface. All high-impact roles should be explicitly targeted by strong CA policies enforcing at minimum MFA — ideally phishing-resistant MFA via an Authentication Strength control.</p>'
+    $caRows = if ($null -ne $CACoverage -and @($CACoverage).Count -gt 0) { @($CACoverage) } else { @() }
+    if ($caRows.Count -gt 0) {
+        $notCoveredHigh = @($caRows | Where-Object { $_.CoverageStatus -eq 'NotCovered' -and $_.IsHighImpact -eq $true }).Count
+        $noMfaHigh      = @($caRows | Where-Object { $_.CoverageStatus -eq 'Covered-NoMFA' -and $_.IsHighImpact -eq $true }).Count
+        $strongMfaCount = @($caRows | Where-Object { $_.CoverageStatus -eq 'Covered-StrongMFA' }).Count
+        $html += "<p><strong>Total roles analysed:</strong> $($caRows.Count) &nbsp; <strong>High-impact roles with no CA coverage:</strong> $notCoveredHigh &nbsp; <strong>High-impact roles covered but without MFA:</strong> $noMfaHigh &nbsp; <strong>Covered with strong MFA:</strong> $strongMfaCount</p>"
+        if ($notCoveredHigh -gt 0 -or $noMfaHigh -gt 0) {
+            $html += "<div class='insight-item' style='border-left-color:#c62828'>$notCoveredHigh high-impact role(s) have no Conditional Access coverage, and $noMfaHigh high-impact role(s) are covered but without MFA enforcement. These roles can be activated without Conditional Access controls applying.</div>"
+        }
+        $html += '<table>'
+        $html += '<thead><tr><th>Role</th><th>High Impact</th><th>Coverage Status</th><th>MFA Enforced</th><th>Device Compliance</th><th>All-Users Policy</th><th>Covering Policies</th><th>Risk Rating</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($cr in $caRows) {
+            if ($cr.RiskRating -eq 'High') { $crBg = '#ffebee'; $crCls = 'badge-high' }
+            elseif ($cr.RiskRating -eq 'Medium') { $crBg = '#fff8e1'; $crCls = 'badge-medium' }
+            else { $crBg = '#f1f8e9'; $crCls = 'badge-low' }
+            $hiLabel = if ($cr.IsHighImpact) { '<strong>Yes</strong>' } else { 'No' }
+            $mfaLabel = if ($cr.IsMfaEnforced) { '<span style="color:#2e7d32"><strong>Yes</strong></span>' } else { '<span style="color:#c62828">No</span>' }
+            $dcLabel  = if ($cr.IsDeviceComplianceEnforced) { 'Yes' } else { 'No' }
+            $allLabel = if ($cr.IsCoveredByAllUsersPolicy)  { 'Yes' } else { 'No' }
+            if ($cr.CoverageStatus -eq 'NotCovered') { $covStyle = 'color:#c62828;font-weight:700' }
+            elseif ($cr.CoverageStatus -eq 'Covered-NoMFA') { $covStyle = 'color:#e65100;font-weight:700' }
+            else { $covStyle = 'color:#2e7d32' }
+            $html += "<tr style='background:$crBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($cr.RoleName))</strong></td>"
+            $html += "<td>$hiLabel</td>"
+            $html += "<td style='$covStyle'>$([System.Net.WebUtility]::HtmlEncode($cr.CoverageStatus))</td>"
+            $html += "<td>$mfaLabel</td><td>$dcLabel</td><td>$allLabel</td>"
+            $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$cr.CoveringPolicies))</td>"
+            $html += "<td><span class='$crCls'>$([System.Net.WebUtility]::HtmlEncode($cr.RiskRating))</span></td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p>Conditional Access coverage data is not available. Ensure the CA policies data was collected successfully (requires Policy.Read.All scope).</p>'
+    }
+
     $html += '</body>'
     $html += '</html>'
 
@@ -1101,6 +1513,7 @@ function Invoke-FullPimReview {
             -IncludeLicenseDetails:$config.IncludeLicenseDetails `
             -IncludeApprovalHistory:$config.IncludeApprovalHistory `
             -IncludePimForGroups:$config.IncludePimForGroups `
+            -IncludeAuthStrength:($IncludeAuthStrength.IsPresent -or $config.IncludeAuthStrength) `
             -ForceReConnect:$ForceReConnect
 
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
@@ -1200,10 +1613,60 @@ function Invoke-FullPimReview {
             -ReturnObjectsOnly)
         $data['RoleElevationMatrix'] = $roleElevationMatrix
 
-        $workbookResult = Build-PimReviewWorkbook -Data $data -Config $config -OutputFolder $runOutputFolder `
-            -WorkbookFileName $workbookFileName `
-            -InstallImportExcelIfMissing:$config.InstallImportExcelIfMissing `
-            -PromptToInstallImportExcel:$config.PromptToInstallImportExcel
+        # Pre-initialise identity analysis keys so they always exist in $data even if the
+        # analysis step fails for any reason (e.g. missing Graph scope, type coercion, network error).
+        $data['AuthStrengthData'] = @()
+        $data['CACoverage']       = @()
+
+        # Pin a direct object reference to the data hashtable before the try/catch block.
+        # In PS5.1 (WMF 5.1), when Build-PimReviewWorkbook.ps1 is dot-sourced its script-level
+        # param([hashtable]$Data) creates $Data=$null in script scope. After a nested try/catch,
+        # PS5.1 variable lookup can incorrectly resolve $data to that script-scope $null instead of
+        # the function-local hashtable. $pimData is a separate reference to the same object that
+        # avoids this name collision entirely.
+        $pimData = $data
+
+        # Identity analysis: authentication strength + CA coverage per role
+        Write-PimLog -Message 'Running identity analysis (authentication strength + CA coverage).'
+        try {
+            $privUserIdStrings = [string[]]@($allUserIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            $identityAnalysis = Get-PimIdentityAnalysis `
+                -PrivilegedUserIds        $privUserIdStrings `
+                -ConditionalAccessPolicies @($advancedRisk.ConditionalAccessPolicies) `
+                -RoleAssignments          $roleAssignments `
+                -HighImpactRoles          @($config.HighImpactRoles) `
+                -OutputFolder             $runOutputFolder `
+                -ReturnObjectsOnly
+
+            if ($null -ne $identityAnalysis) {
+                $authStrengthResult = $identityAnalysis.AuthStrength
+                $caCoverageResult   = $identityAnalysis.CACoverage
+                if ($null -ne $authStrengthResult) { $pimData['AuthStrengthData'] = @($authStrengthResult) }
+                if ($null -ne $caCoverageResult)   { $pimData['CACoverage']       = @($caCoverageResult) }
+            }
+        }
+        catch {
+            Write-PimLog -Level WARN -Message "Identity analysis (auth strength / CA coverage) failed and will be skipped. Error: $($_.Exception.Message)"
+        }
+
+        Write-PimLog -Message "Building PIM review workbook (data keys: $($pimData.Count), auth-strength records: $(@($pimData.AuthStrengthData).Count), CA-coverage records: $(@($pimData.CACoverage).Count))."
+
+        # Use splatting to pre-evaluate all argument values into a hashtable before the call.
+        # Calling Build-PimReviewWorkbook with named parameters (-Data $pimData) triggers a PS5.1
+        # scope-resolution bug: dot-sourcing Build-PimReviewWorkbook.ps1 creates $Data=$null and
+        # $Config=$null in script scope; PS5.1 Mandatory validation then resolves those names against
+        # script scope (null) instead of the supplied argument. Splatting bypasses this because the
+        # values are captured into $wbSplat at construction time using function-local scope lookup,
+        # and passed to the function as pre-resolved object references.
+        $wbSplat = @{
+            Data                        = $pimData
+            Config                      = $config
+            OutputFolder                = $runOutputFolder
+            WorkbookFileName            = $workbookFileName
+            InstallImportExcelIfMissing = [bool]$config.InstallImportExcelIfMissing
+            PromptToInstallImportExcel  = [bool]$config.PromptToInstallImportExcel
+        }
+        $workbookResult = Build-PimReviewWorkbook @wbSplat
 
         $runMeta = [pscustomobject]@{
             RunUtc                  = (Get-Date).ToUniversalTime().ToString('o')
@@ -1263,7 +1726,17 @@ function Invoke-FullPimReview {
             -NestedGroupPaths          $advancedRisk.NestedGroupPaths `
             -SodConflicts              $workbookResult.SoDConflicts `
             -ExecutiveScorecard        $workbookResult.ExecutiveScorecard `
-            -RoleElevationMatrix       $roleElevationMatrix
+            -RoleElevationMatrix       $roleElevationMatrix `
+            -PrivilegeConcentration    $workbookResult.PrivilegeConcentration `
+            -GroupRiskProfiles         $workbookResult.GroupRoleSummary `
+            -JitEffectiveness          $workbookResult.JitEffectiveness `
+            -KeyInsights               @($workbookResult.KeyInsights) `
+            -GuestPrivilegedAccounts   $workbookResult.GuestPrivilegedAccounts `
+            -NamingCompliance          $workbookResult.NamingCompliance `
+            -LicensedPrivilegedAccounts $workbookResult.LicensedPrivilegedAccounts `
+            -IdentityAssuranceProfiles $workbookResult.IdentityAssuranceProfiles `
+            -AuthStrengthData          @($pimData.AuthStrengthData) `
+            -CACoverage                @($pimData.CACoverage)
 
         Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 

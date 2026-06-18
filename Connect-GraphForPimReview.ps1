@@ -43,7 +43,8 @@ function Get-DefaultPimScopes {
     param(
         [switch]$IncludeLicenseDetails,
         [switch]$IncludeApprovalHistory,
-        [switch]$IncludePimForGroups
+        [switch]$IncludePimForGroups,
+        [switch]$IncludeAuthStrength
     )
 
     $scopeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -72,6 +73,12 @@ function Get-DefaultPimScopes {
     $null = $scopeSet.Add('AccessReview.Read.All')
     $null = $scopeSet.Add('Application.Read.All')
 
+    if ($IncludeAuthStrength) {
+        # Required for authentication method registration details
+        # (GET /v1.0/reports/authenticationMethods/userRegistrationDetails)
+        $null = $scopeSet.Add('Reports.Read.All')
+    }
+
     return @($scopeSet)
 }
 
@@ -83,6 +90,7 @@ function Connect-GraphForPimReview {
         [switch]$IncludeLicenseDetails,
         [switch]$IncludeApprovalHistory,
         [switch]$IncludePimForGroups,
+        [switch]$IncludeAuthStrength,
         [switch]$ForceReConnect
     )
 
@@ -94,7 +102,7 @@ function Connect-GraphForPimReview {
         $Scopes
     }
     else {
-        Get-DefaultPimScopes -IncludeLicenseDetails:$IncludeLicenseDetails -IncludeApprovalHistory:$IncludeApprovalHistory -IncludePimForGroups:$IncludePimForGroups
+        Get-DefaultPimScopes -IncludeLicenseDetails:$IncludeLicenseDetails -IncludeApprovalHistory:$IncludeApprovalHistory -IncludePimForGroups:$IncludePimForGroups -IncludeAuthStrength:$IncludeAuthStrength
     }
 
     $currentContext = Get-MgContext -ErrorAction SilentlyContinue

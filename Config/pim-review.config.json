@@ -6,9 +6,11 @@
   "IncludeApprovalHistory": true,
   "IncludeLicenseDetails": true,
   "IncludePimForGroups": true,
+  "IncludeAuthStrength": true,
   "InstallImportExcelIfMissing": false,
   "PromptToInstallImportExcel": false,
   "LongActivationThresholdHours": 8,
+  "NamingCompliancePrefix": "CLAD_",
   "HighImpactRoles": [
     "Global Administrator",
     "Privileged Role Administrator",
