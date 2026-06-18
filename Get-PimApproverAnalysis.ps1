@@ -718,6 +718,83 @@ function Get-PimApproverAnalysis {
     }
 }
 
+# ─── Convenience wrappers (spec-named public surface) ─────────────────────────
+
+function Get-RoleApprovers {
+    <#
+    .SYNOPSIS
+    Returns the flat approver profile rows for a specific role (or all roles).
+    Each row represents one effective approver member after group expansion.
+    Wraps Get-ApproverProfiles for external call-site convenience.
+
+    .PARAMETER RoleName
+    Optional. Filter to a specific role. Omit to return all roles.
+
+    .PARAMETER PolicyFlatRules
+    The flat policy rules array produced by Get-PimRolePolicySettings.
+
+    .PARAMETER RoleAssignments
+    The role assignments array (used to build privileged-user lookup).
+
+    .PARAMETER Config
+    The PIM review configuration hashtable.
+
+    .PARAMETER OutputFolder
+    Run output folder (used when exporting CSVs).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RoleName,
+        [object[]]$PolicyFlatRules,
+        [object[]]$RoleAssignments,
+        [hashtable]$Config,
+        [string]$OutputFolder
+    )
+
+    $result = Get-PimApproverAnalysis `
+        -PolicyFlatRules  $PolicyFlatRules `
+        -RoleAssignments  $RoleAssignments `
+        -Config           $Config `
+        -OutputFolder     $OutputFolder `
+        -ReturnObjectsOnly
+
+    $profiles = @($result.ApproverProfiles)
+    if (-not [string]::IsNullOrWhiteSpace($RoleName)) {
+        $profiles = @($profiles | Where-Object { $_.RoleName -ieq $RoleName })
+    }
+    return $profiles
+}
+
+function Get-ApprovalSummary {
+    <#
+    .SYNOPSIS
+    Returns per-role approval summary rows (ApprovalAnalysis) from a completed
+    Get-PimApproverAnalysis result, optionally filtered to a single role.
+
+    Each row contains: RoleName, ApproverType, GroupName, GroupType, MemberCount,
+    GuestMembers, PrivilegedMembers, ApprovalIntegrity, RiskRating.
+
+    .PARAMETER AnalysisResult
+    The object returned by Get-PimApproverAnalysis (must contain .ApprovalAnalysis).
+
+    .PARAMETER RoleName
+    Optional filter to a single role.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$AnalysisResult,
+
+        [string]$RoleName
+    )
+
+    $rows = @($AnalysisResult.ApprovalAnalysis)
+    if (-not [string]::IsNullOrWhiteSpace($RoleName)) {
+        $rows = @($rows | Where-Object { $_.RoleName -ieq $RoleName })
+    }
+    return $rows
+}
+
 # ─── Script entry point ───────────────────────────────────────────────────────
 
 if ($MyInvocation.InvocationName -ne '.') {

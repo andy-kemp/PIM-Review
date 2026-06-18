@@ -356,7 +356,9 @@ function New-PimSummaryReport {
 
         [object[]]$CACoverage,
 
-        [object[]]$ApprovalAnalysis
+        [object[]]$ApprovalAnalysis,
+
+        [object[]]$ApproverProfiles
     )
 
 
@@ -1405,7 +1407,129 @@ function New-PimSummaryReport {
         $html += '<p>Approval model analysis data is not available for this run. Ensure the role policy settings were collected successfully.</p>'
     }
 
-    $html += '</body>'
+    # ── Section 27.1 — Per-Role Approval Breakdown ────────────────────────────────
+    $profileRowsAll = if ($null -ne $ApproverProfiles) { @($ApproverProfiles) } else { @() }
+    if ($profileRowsAll.Count -gt 0) {
+        $html += '<h3 id="s27-1">27.1 Per-Role Approval Breakdown</h3>'
+        $html += '<p>Each role block below lists every effective approver with their identity flags. Where approver groups were configured, members are shown individually. A role-level summary and integrity verdict is shown at the bottom of each block.</p>'
+
+        # Build a lookup of integrity/risk from the analysis summary rows
+        $integrityLookup = @{}
+        foreach ($ar in $approvalRows) {
+            if ($ar.RoleName) { $integrityLookup[[string]$ar.RoleName] = $ar }
+        }
+
+        # Group profiles by RoleName, preserving order from analysis rows
+        $orderedRoleNames = [System.Collections.Generic.List[string]]::new()
+        $profilesByRole   = @{}
+        # First add roles from analysis rows (preserves integrity-ordered output)
+        foreach ($ar in $approvalRows) {
+            if ($ar.RoleName -and -not $profilesByRole.ContainsKey([string]$ar.RoleName)) {
+                [void]$orderedRoleNames.Add([string]$ar.RoleName)
+                $profilesByRole[[string]$ar.RoleName] = [System.Collections.Generic.List[object]]::new()
+            }
+        }
+        foreach ($p in $profileRowsAll) {
+            $rn = if ($p.RoleName) { [string]$p.RoleName } else { '' }
+            if (-not $profilesByRole.ContainsKey($rn)) {
+                [void]$orderedRoleNames.Add($rn)
+                $profilesByRole[$rn] = [System.Collections.Generic.List[object]]::new()
+            }
+            $profilesByRole[$rn].Add($p)
+        }
+
+        foreach ($roleName27 in $orderedRoleNames) {
+            $roleProfiles27 = @($profilesByRole[$roleName27])
+            $summary27      = if ($integrityLookup.ContainsKey($roleName27)) { $integrityLookup[$roleName27] } else { $null }
+            $integrity27    = if ($summary27) { [string]$summary27.ApprovalIntegrity } else { 'Unknown' }
+
+            switch ($integrity27) {
+                'Broken'   { $cardBorder = '#c62828'; $cardBg = '#fff5f5' }
+                'Weak'     { $cardBorder = '#e65100'; $cardBg = '#fff8f0' }
+                'Moderate' { $cardBorder = '#f9a825'; $cardBg = '#fffde7' }
+                'Strong'   { $cardBorder = '#2e7d32'; $cardBg = '#f1f8f1' }
+                default    { $cardBorder = '#9e9e9e'; $cardBg = '#fafafa' }
+            }
+
+            $html += "<div style='border-left:4px solid $cardBorder;background:$cardBg;padding:12px 16px;margin:18px 0;border-radius:4px'>"
+            $html += "<h4 style='margin:0 0 8px 0'>$([System.Net.WebUtility]::HtmlEncode($roleName27))</h4>"
+
+            # Group names / group types summary line
+            $roleGroups27 = @($roleProfiles27 | Where-Object { $_.ApproverObjectType -eq 'Group' -and $_.GroupName } | Select-Object -Property GroupName, GroupType -Unique)
+            if ($roleGroups27.Count -gt 0) {
+                $html += '<p style="margin:4px 0"><strong>Approver Groups:</strong>'
+                $html += '<ul style="margin:4px 0 8px 24px">'
+                foreach ($rg in $roleGroups27) {
+                    $html += "<li>$([System.Net.WebUtility]::HtmlEncode([string]$rg.GroupName)) <em style='color:#666'>($([System.Net.WebUtility]::HtmlEncode([string]$rg.GroupType)))</em></li>"
+                }
+                $html += '</ul></p>'
+            }
+            else {
+                # Individual user approvers — list directly
+                $directUsers27 = @($roleProfiles27 | Where-Object { $_.ApproverObjectType -eq 'User' })
+                if ($directUsers27.Count -gt 0) {
+                    $html += '<p style="margin:4px 0"><strong>Direct Approvers:</strong>'
+                    $html += '<ul style="margin:4px 0 8px 24px">'
+                    foreach ($du in $directUsers27) {
+                        $duFlags = @()
+                        if ($du.IsGuest)            { $duFlags += "<span class='badge-medium' style='font-size:10px'>Guest</span>" }
+                        if ($du.IsPrivileged)       { $duFlags += "<span class='badge-high' style='font-size:10px'>Privileged</span>" }
+                        if ($du.NamingCompliant -eq $false) { $duFlags += "<span class='badge-medium' style='font-size:10px'>Naming</span>" }
+                        $duFlagsStr = if ($duFlags) { ' ' + ($duFlags -join ' ') } else { '' }
+                        $html += "<li>$([System.Net.WebUtility]::HtmlEncode([string]$du.DisplayName)) &mdash; $([System.Net.WebUtility]::HtmlEncode([string]$du.UserPrincipalName))$duFlagsStr</li>"
+                    }
+                    $html += '</ul></p>'
+                }
+            }
+
+            # Member table (effective members — may include group members or direct user approvers)
+            $effectiveMembers27 = @($roleProfiles27 | Where-Object { -not [string]::IsNullOrWhiteSpace($_.UserId) })
+            if ($effectiveMembers27.Count -gt 0) {
+                $html += '<p style="margin:8px 0 4px 0"><strong>Members:</strong></p>'
+                $html += '<table style="font-size:12px;margin-bottom:8px">'
+                $html += '<thead><tr><th>Display Name</th><th>UPN</th><th>Type</th><th>Guest</th><th>Privileged</th><th>Naming OK</th><th>Licensed</th><th>Source</th></tr></thead>'
+                $html += '<tbody>'
+                foreach ($em in $effectiveMembers27) {
+                    $emGuest  = if ($em.IsGuest)            { "<span style='color:#e65100;font-weight:700'>Yes</span>" } else { 'No' }
+                    $emPriv   = if ($em.IsPrivileged)       { "<span style='color:#c62828;font-weight:700'>Yes</span>" } else { 'No' }
+                    $emName   = if ($em.NamingCompliant -eq $false) { "<span style='color:#f9a825;font-weight:700'>No</span>" } else { 'Yes' }
+                    $emLic    = if ($em.IsLicensed)         { 'Yes' } else { 'No' }
+                    $emSource = if ($em.MemberSource)       { [string]$em.MemberSource } else { 'Direct' }
+                    $emRowBg  = if ($em.IsGuest) { '#fff8e1' } elseif ($em.IsPrivileged) { '#ffebee' } else { '' }
+                    $emRowStyle = if ($emRowBg) { " style='background:$emRowBg'" } else { '' }
+                    $html += "<tr$emRowStyle>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$em.DisplayName))</td>"
+                    $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$em.UserPrincipalName))</td>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$em.UserType))</td>"
+                    $html += "<td>$emGuest</td><td>$emPriv</td><td>$emName</td><td>$emLic</td>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode($emSource))</td>"
+                    $html += '</tr>'
+                }
+                $html += '</tbody></table>'
+            }
+            else {
+                $html += '<p style="color:#c62828"><em>No effective approver members could be resolved for this role.</em></p>'
+            }
+
+            # Per-role summary footer
+            $roleTotal27  = $effectiveMembers27.Count
+            $roleGuest27  = @($effectiveMembers27 | Where-Object { $_.IsGuest }).Count
+            $rolePriv27   = @($effectiveMembers27 | Where-Object { $_.IsPrivileged }).Count
+            $roleNaming27 = @($effectiveMembers27 | Where-Object { $_.NamingCompliant -eq $false }).Count
+            if ($integrity27 -eq 'Broken')   { $integCls27 = 'badge-critical' }
+            elseif ($integrity27 -eq 'Weak') { $integCls27 = 'badge-high' }
+            elseif ($integrity27 -eq 'Moderate') { $integCls27 = 'badge-medium' }
+            else                             { $integCls27 = 'badge-low' }
+            $html += "<p style='margin:6px 0 0 0;font-size:12px'>"
+            $html += "<strong>Total Members:</strong> $roleTotal27 &nbsp; "
+            $html += "<strong>Guest:</strong> $roleGuest27 &nbsp; "
+            $html += "<strong>Privileged:</strong> $rolePriv27 &nbsp; "
+            $html += "<strong>Naming Issues:</strong> $roleNaming27 &nbsp; "
+            $html += "<strong>Approval Integrity:</strong> <span class='$integCls27'>$([System.Net.WebUtility]::HtmlEncode($integrity27))</span>"
+            $html += '</p>'
+            $html += '</div>'
+        }
+    }
     $html += '</html>'
 
     $html | Out-File -FilePath $summaryHtmlPath -Encoding UTF8
@@ -1855,7 +1979,8 @@ function Invoke-FullPimReview {
             -IdentityAssuranceProfiles $workbookResult.IdentityAssuranceProfiles `
             -AuthStrengthData          @($pimData.AuthStrengthData) `
             -CACoverage                @($pimData.CACoverage) `
-            -ApprovalAnalysis          @($pimData.ApprovalAnalysis)
+            -ApprovalAnalysis          @($pimData.ApprovalAnalysis) `
+            -ApproverProfiles          @($pimData.ApproverProfiles)
 
         Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 
