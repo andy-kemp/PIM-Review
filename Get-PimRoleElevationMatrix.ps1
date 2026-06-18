@@ -587,6 +587,8 @@ function Get-RoleElevationPolicy {
         GovernanceWeaknesses           = ($govWeaknesses -join '; ')
         RiskRating                     = $riskRating
         RiskRationale                  = $riskRationale
+        ApprovalIntegrity              = 'Unknown'
+        GroupType                      = $null
     }
 }
 
@@ -827,6 +829,8 @@ function ConvertTo-RoleElevationMatrixExportRows {
                 ControlGaps                    = $row.ControlGaps
                 GovernanceWeaknesses           = $row.GovernanceWeaknesses
                 RiskRationale                  = $row.RiskRationale
+                ApprovalIntegrity              = if ($null -ne $row.PSObject.Properties['ApprovalIntegrity']) { $row.ApprovalIntegrity } else { 'Unknown' }
+                GroupType                      = if ($null -ne $row.PSObject.Properties['GroupType'])         { $row.GroupType }         else { $null }
             }
         }
     )

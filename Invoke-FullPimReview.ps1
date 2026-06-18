@@ -50,6 +50,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimAdvancedRiskData.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimRoleElevationMatrix.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimIdentityAnalysis.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimApproverAnalysis.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-PimReviewWorkbook.ps1')
 
 function Get-PimConfig {
@@ -353,7 +354,9 @@ function New-PimSummaryReport {
 
         [object[]]$AuthStrengthData,
 
-        [object[]]$CACoverage
+        [object[]]$CACoverage,
+
+        [object[]]$ApprovalAnalysis
     )
 
 
@@ -588,6 +591,7 @@ function New-PimSummaryReport {
     $lines += '- 24.0 Identity Assurance Profile'
     $lines += '- 25.0 Authentication Strength Analysis'
     $lines += '- 26.0 Conditional Access Coverage by Role'
+    $lines += '- 27.0 Approval Model Analysis'
     $lines += ''
     $lines += '## 1.0 Assessment Engagement Context'
     $lines += ''
@@ -720,6 +724,22 @@ function New-PimSummaryReport {
         $lines += "- Priority 3: Triage and close $highCount high-risk findings first, then tackle medium findings in a 30/60/90-day plan."
     }
 
+    $lines += ''
+    $lines += '## 27.0 Approval Model Analysis'
+    $lines += ''
+    $approvalRowsMd = if ($null -ne $ApprovalAnalysis) { @($ApprovalAnalysis) } else { @() }
+    $approvalGroupBasedMd = @($approvalRowsMd | Where-Object { $_.ApproverType -in 'Group', 'Mixed' }).Count
+    $approvalGuestMd      = @($approvalRowsMd | Where-Object { $_.GuestMembers -gt 0 }).Count
+    $approvalWeakMd       = @($approvalRowsMd | Where-Object { $_.ApprovalIntegrity -in 'Weak', 'Broken' }).Count
+    $lines += "- Roles with approval configured: $($approvalRowsMd.Count)"
+    $lines += "- Roles with group-based approvers: $approvalGroupBasedMd"
+    $lines += "- Roles with guest approvers: $approvalGuestMd"
+    $lines += "- Roles with Weak or Broken integrity: $approvalWeakMd"
+    if ($approvalRowsMd.Count -gt 0) {
+        $lines += ''
+        $lines += (ConvertTo-MarkdownTable -Rows $approvalRowsMd -Columns @('RoleName', 'ApproverType', 'GroupName', 'GroupType', 'MemberCount', 'GuestMembers', 'PrivilegedMembers', 'ApprovalIntegrity', 'RiskRating'))
+    }
+
     $lines | Out-File -FilePath $summaryPath -Encoding UTF8
 
     $html = @()
@@ -808,6 +828,7 @@ function New-PimSummaryReport {
     $html += '<li>24.0 Identity Assurance Profile</li>'
     $html += '<li>25.0 Authentication Strength Analysis</li>'
     $html += '<li>26.0 Conditional Access Coverage by Role</li>'
+    $html += '<li>27.0 Approval Model Analysis</li>'
     $html += '</ul>'
 
     $html += '<h2>1.0 Assessment Engagement Context</h2>'
@@ -1331,6 +1352,59 @@ function New-PimSummaryReport {
         $html += '<p>Conditional Access coverage data is not available. Ensure the CA policies data was collected successfully (requires Policy.Read.All scope).</p>'
     }
 
+    # ── Section 27.0 — Approval Model Analysis ────────────────────────────────────
+    $approvalRows       = if ($null -ne $ApprovalAnalysis) { @($ApprovalAnalysis) } else { @() }
+    $approvalGroupBased = @($approvalRows | Where-Object { $_.ApproverType -in 'Group', 'Mixed' }).Count
+    $approvalGuestRoles = @($approvalRows | Where-Object { $_.GuestMembers -gt 0 }).Count
+    $approvalWeakBroken = @($approvalRows | Where-Object { $_.ApprovalIntegrity -in 'Weak', 'Broken' }).Count
+    $approvalStrong     = @($approvalRows | Where-Object { $_.ApprovalIntegrity -eq 'Strong' }).Count
+
+    $html += '<h2>27.0 Approval Model Analysis</h2>'
+    $html += '<p class="section-intro">This section analyses the approval model for every role that requires approval. Approver groups are expanded to member level and evaluated for guest composition, privileged user overlap, and self-approval risk. The <strong>ApprovalIntegrity</strong> classification objectively rates how robust the approval gate is against circumvention.</p>'
+    $html += '<ul>'
+    $html += '<li><strong>Strong:</strong> No overlap between approvers and role holders. All approvers are clean, identified internal accounts.</li>'
+    $html += '<li><strong>Moderate:</strong> Guest approvers present, external tenant identities, or unclear approver type mapping.</li>'
+    $html += '<li><strong>Weak:</strong> Approvers themselves hold privileged roles &mdash; separation of duties is reduced.</li>'
+    $html += '<li><strong>Broken:</strong> Effective self-approval possible (same identity or heuristic alias match between approver and role holder), or approver group resolves to zero members.</li>'
+    $html += '</ul>'
+    if ($approvalRows.Count -gt 0) {
+        $html += "<p><strong>Roles with approval configured:</strong> $($approvalRows.Count) &nbsp; <strong>Group-based:</strong> $approvalGroupBased &nbsp; <strong>With guest approvers:</strong> $approvalGuestRoles &nbsp; <strong>Weak or Broken integrity:</strong> $approvalWeakBroken &nbsp; <strong>Strong integrity:</strong> $approvalStrong</p>"
+        if ($approvalWeakBroken -gt 0) {
+            $html += "<div class='insight-item' style='border-left-color:#c62828'>$approvalWeakBroken role(s) have Weak or Broken approval integrity. Review the approval group composition and ensure approvers are separated from role holders to maintain a meaningful approval gate.</div>"
+        }
+        if ($approvalGuestRoles -gt 0) {
+            $html += "<div class='insight-item' style='border-left-color:#e65100'>$approvalGuestRoles role(s) rely on guest (external) identities as approvers. Guest accounts operate outside this organisation's identity lifecycle and should not be approval authorities for privileged access.</div>"
+        }
+        $html += '<table>'
+        $html += '<thead><tr><th>Role</th><th>Approver Type</th><th>Group Name</th><th>Group Type</th><th>Member Count</th><th>Guest Approvers</th><th>Privileged Approvers</th><th>Approval Integrity</th><th>Risk Rating</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($ar in $approvalRows) {
+            $integ = [string]$ar.ApprovalIntegrity
+            if     ($integ -eq 'Broken')   { $arBg = '#ffcdd2'; $arCls = 'badge-critical' }
+            elseif ($integ -eq 'Weak')     { $arBg = '#ffebee'; $arCls = 'badge-high'     }
+            elseif ($integ -eq 'Moderate') { $arBg = '#fff8e1'; $arCls = 'badge-medium'   }
+            else                           { $arBg = '#f1f8e9'; $arCls = 'badge-low'      }
+            $guestStyle = if ([int]$ar.GuestMembers -gt 0) { 'color:#e65100;font-weight:700' } else { '' }
+            $privStyle  = if ([int]$ar.PrivilegedMembers -gt 0) { 'color:#c62828;font-weight:700' } else { '' }
+            $html += "<tr style='background:$arBg'>"
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode($ar.RoleName))</strong></td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$ar.ApproverType))</td>"
+            $html += "<td style='font-size:12px'>$([System.Net.WebUtility]::HtmlEncode([string]$ar.GroupName))</td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$ar.GroupType))</td>"
+            $html += "<td>$($ar.MemberCount)</td>"
+            $html += "<td style='$guestStyle'>$($ar.GuestMembers)</td>"
+            $html += "<td style='$privStyle'>$($ar.PrivilegedMembers)</td>"
+            $html += "<td><span class='$arCls'>$([System.Net.WebUtility]::HtmlEncode($integ))</span></td>"
+            if ($ar.RiskRating -eq 'High') { $rrCls = 'badge-high' } elseif ($ar.RiskRating -eq 'Medium') { $rrCls = 'badge-medium' } else { $rrCls = 'badge-low' }
+            $html += "<td><span class='$rrCls'>$([System.Net.WebUtility]::HtmlEncode([string]$ar.RiskRating))</span></td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+    else {
+        $html += '<p>Approval model analysis data is not available for this run. Ensure the role policy settings were collected successfully.</p>'
+    }
+
     $html += '</body>'
     $html += '</html>'
 
@@ -1618,6 +1692,11 @@ function Invoke-FullPimReview {
         $data['AuthStrengthData'] = @()
         $data['CACoverage']       = @()
 
+        # Pre-initialise approver analysis keys
+        $data['ApprovalAnalysis'] = @()
+        $data['ApproverProfiles'] = @()
+        $data['ApprovalFindings'] = @()
+
         # Pin a direct object reference to the data hashtable before the try/catch block.
         # In PS5.1 (WMF 5.1), when Build-PimReviewWorkbook.ps1 is dot-sourced its script-level
         # param([hashtable]$Data) creates $Data=$null in script scope. After a nested try/catch,
@@ -1647,6 +1726,44 @@ function Invoke-FullPimReview {
         }
         catch {
             Write-PimLog -Level WARN -Message "Identity analysis (auth strength / CA coverage) failed and will be skipped. Error: $($_.Exception.Message)"
+        }
+
+        # ── Approver analysis: expand groups, evaluate integrity, generate findings ──────
+        Write-PimLog -Message 'Running deep approver analysis (group expansion and integrity evaluation).'
+        try {
+            $approverAnalysisResult = Get-PimApproverAnalysis `
+                -PolicyFlatRules  $policyRules `
+                -RoleAssignments  $roleAssignments `
+                -Config           $config `
+                -OutputFolder     $runOutputFolder `
+                -ReturnObjectsOnly
+
+            if ($null -ne $approverAnalysisResult) {
+                # Patch every elevation matrix policy object with ApprovalIntegrity and GroupType
+                $integrityByRole = @{}
+                $groupTypeByRole = @{}
+                foreach ($row in @($approverAnalysisResult.ApprovalAnalysis)) {
+                    if (-not [string]::IsNullOrWhiteSpace($row.RoleName)) {
+                        $integrityByRole[$row.RoleName] = $row.ApprovalIntegrity
+                        if ($row.GroupType) { $groupTypeByRole[$row.RoleName] = $row.GroupType }
+                    }
+                }
+                foreach ($policy in $roleElevationMatrix) {
+                    if ($policy -and -not [string]::IsNullOrWhiteSpace($policy.RoleName)) {
+                        $ai = if ($integrityByRole.ContainsKey($policy.RoleName)) { $integrityByRole[$policy.RoleName] } else { 'Unknown' }
+                        $gt = if ($groupTypeByRole.ContainsKey($policy.RoleName)) { $groupTypeByRole[$policy.RoleName] } else { $null }
+                        $policy | Add-Member -NotePropertyName ApprovalIntegrity -NotePropertyValue $ai -Force
+                        $policy | Add-Member -NotePropertyName GroupType         -NotePropertyValue $gt -Force
+                    }
+                }
+                $pimData['ApprovalAnalysis'] = @($approverAnalysisResult.ApprovalAnalysis)
+                $pimData['ApproverProfiles'] = @($approverAnalysisResult.ApproverProfiles)
+                $pimData['ApprovalFindings'] = @($approverAnalysisResult.ApprovalFindings)
+                Write-PimLog -Message "Approver analysis complete: $(@($approverAnalysisResult.ApprovalAnalysis).Count) role(s) analysed, $(@($approverAnalysisResult.ApproverProfiles).Count) approver profile row(s)."
+            }
+        }
+        catch {
+            Write-PimLog -Level WARN -Message "Approver analysis failed and will be skipped. Error: $($_.Exception.Message)"
         }
 
         Write-PimLog -Message "Building PIM review workbook (data keys: $($pimData.Count), auth-strength records: $(@($pimData.AuthStrengthData).Count), CA-coverage records: $(@($pimData.CACoverage).Count))."
@@ -1711,6 +1828,7 @@ function Invoke-FullPimReview {
         }
 
         Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix -NotePropertyValue @($roleElevationMatrix).Count -Force
+        Add-Member -InputObject $runMeta.Counts -NotePropertyName ApprovalAnalysis    -NotePropertyValue @($pimData.ApprovalAnalysis).Count  -Force
 
         $summaryInfo = New-PimSummaryReport `
             -OutputFolder      $runOutputFolder `
@@ -1736,7 +1854,8 @@ function Invoke-FullPimReview {
             -LicensedPrivilegedAccounts $workbookResult.LicensedPrivilegedAccounts `
             -IdentityAssuranceProfiles $workbookResult.IdentityAssuranceProfiles `
             -AuthStrengthData          @($pimData.AuthStrengthData) `
-            -CACoverage                @($pimData.CACoverage)
+            -CACoverage                @($pimData.CACoverage) `
+            -ApprovalAnalysis          @($pimData.ApprovalAnalysis)
 
         Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 

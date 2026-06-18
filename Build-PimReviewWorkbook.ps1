@@ -1270,6 +1270,15 @@ function Build-PimReviewWorkbook {
         $findings = @($findingsList | Sort-Object -Property RiskRating, FindingType, Subject -Unique)
     }
 
+    # ── Merge approval-model findings from approver analysis ──────────────────────
+    if ($Data.ContainsKey('ApprovalFindings') -and $Data.ApprovalFindings -and @($Data.ApprovalFindings).Count -gt 0) {
+        $approvalFindingsMerge = @($Data.ApprovalFindings)
+        $mergedList = [System.Collections.Generic.List[object]]::new()
+        foreach ($f in $findings) { $mergedList.Add($f) }
+        foreach ($f in $approvalFindingsMerge) { $mergedList.Add($f) }
+        $findings = @($mergedList | Sort-Object -Property RiskRating, FindingType, Subject)
+    }
+
     $userRoleSummary = New-UserRoleSummary -UserAccessPaths $userAccessPaths
     $groupRoleSummary = New-GroupRoleSummary `
         -PrivilegedGroups $Data.PrivilegedGroups `
@@ -1488,7 +1497,9 @@ function Build-PimReviewWorkbook {
         @{ Name = '27_Licensed_Admins';            Data = $licensedPrivilegedAccounts },
         @{ Name = '28_Identity_Assurance';         Data = $identityAssuranceProfiles },
         @{ Name = '29_Auth_Strength';              Data = $authStrengthData },
-        @{ Name = '30_CA_Coverage';                Data = $caCoverageData }
+        @{ Name = '30_CA_Coverage';                Data = $caCoverageData },
+        @{ Name = '31_Approval_Analysis';          Data = if ($Data.ContainsKey('ApprovalAnalysis') -and $Data.ApprovalAnalysis) { @($Data.ApprovalAnalysis) } else { @() } },
+        @{ Name = '32_Approver_Profiles';          Data = if ($Data.ContainsKey('ApproverProfiles') -and $Data.ApproverProfiles) { @($Data.ApproverProfiles) } else { @() } }
     )
 
     foreach ($sheet in $sheetMap) {
@@ -1558,6 +1569,17 @@ function Build-PimReviewWorkbook {
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '30_CA_Coverage' -Address 'J:J' -RuleType ContainsText -ConditionValue 'High'   -BackgroundColor 'LightSalmon'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '30_CA_Coverage' -Address 'J:J' -RuleType ContainsText -ConditionValue 'Medium' -BackgroundColor 'Khaki'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '30_CA_Coverage' -Address 'J:J' -RuleType ContainsText -ConditionValue 'Low'    -BackgroundColor 'LightGreen'
+            # Sheet 31 -- Approval Analysis: ApprovalIntegrity (col H), RiskRating (col I)
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'H:H' -RuleType ContainsText -ConditionValue 'Broken'   -BackgroundColor 'LightCoral'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'H:H' -RuleType ContainsText -ConditionValue 'Weak'     -BackgroundColor 'LightSalmon'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'H:H' -RuleType ContainsText -ConditionValue 'Moderate' -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'H:H' -RuleType ContainsText -ConditionValue 'Strong'   -BackgroundColor 'LightGreen'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'I:I' -RuleType ContainsText -ConditionValue 'High'     -BackgroundColor 'LightSalmon'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'I:I' -RuleType ContainsText -ConditionValue 'Medium'   -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '31_Approval_Analysis' -Address 'I:I' -RuleType ContainsText -ConditionValue 'Low'      -BackgroundColor 'LightGreen'
+            # Sheet 32 -- Approver Profiles: IsGuest (col K), IsPrivileged (col M)
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '32_Approver_Profiles' -Address 'K:K' -RuleType ContainsText -ConditionValue 'True'  -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '32_Approver_Profiles' -Address 'M:M' -RuleType ContainsText -ConditionValue 'True'  -BackgroundColor 'LightSalmon'
         }
         else {
             Write-PimLog -Level WARN -Message 'Conditional formatting skipped for this ImportExcel version (no Path parameter support).'
@@ -1588,6 +1610,7 @@ function Build-PimReviewWorkbook {
         NamingCompliance           = $namingCompliance
         LicensedPrivilegedAccounts = $licensedPrivilegedAccounts
         IdentityAssuranceProfiles  = $identityAssuranceProfiles
+        ApprovalAnalysis           = if ($Data.ContainsKey('ApprovalAnalysis') -and $Data.ApprovalAnalysis) { @($Data.ApprovalAnalysis) } else { @() }
     }
 }
 
