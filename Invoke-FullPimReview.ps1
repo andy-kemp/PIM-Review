@@ -358,7 +358,9 @@ function New-PimSummaryReport {
 
         [object[]]$ApprovalAnalysis,
 
-        [object[]]$ApproverProfiles
+        [object[]]$ApproverProfiles,
+
+        [object[]]$ApproverGroupRoleMap
     )
 
 
@@ -831,6 +833,9 @@ function New-PimSummaryReport {
     $html += '<li>25.0 Authentication Strength Analysis</li>'
     $html += '<li>26.0 Conditional Access Coverage by Role</li>'
     $html += '<li>27.0 Approval Model Analysis</li>'
+    $html += '<li>27.1 Per-Role Approval Breakdown</li>'
+    $html += '<li>27.2 Approver Group &#8212; Role Mapping</li>'
+    $html += '<li>27.3 Approver Group Member Directory</li>'
     $html += '</ul>'
 
     $html += '<h2>1.0 Assessment Engagement Context</h2>'
@@ -1530,6 +1535,109 @@ function New-PimSummaryReport {
             $html += '</div>'
         }
     }
+
+    # ── Section 27.2 — Approver Group → Role Mapping ─────────────────────────────
+    $groupRoleRows = if ($null -ne $ApproverGroupRoleMap) { @($ApproverGroupRoleMap) } else { @() }
+    if ($groupRoleRows.Count -gt 0) {
+        $html += '<h3 id="s27-2">27.2 Approver Group &#8212; Role Mapping</h3>'
+        $html += '<p>This table shows every approver group that is configured across all PIM role policies, and which roles each group is responsible for approving. Use this view to assess whether an approver group has an inappropriate breadth of approval authority, or whether critical roles rely on the same approver pool.</p>'
+        $html += '<table>'
+        $html += '<thead><tr><th>Approver Group</th><th>Group Type</th><th>Roles Approved</th><th>Role Count</th><th>Members</th><th>Guest Members</th><th>Privileged Members</th></tr></thead>'
+        $html += '<tbody>'
+        foreach ($gr in $groupRoleRows) {
+            $grGuest = if ([int]$gr.GuestMembers -gt 0) { "<span style='color:#e65100;font-weight:700'>$($gr.GuestMembers)</span>" } else { '0' }
+            $grPriv  = if ([int]$gr.PrivilegedMembers -gt 0) { "<span style='color:#c62828;font-weight:700'>$($gr.PrivilegedMembers)</span>" } else { '0' }
+            $html += '<tr>'
+            $html += "<td><strong>$([System.Net.WebUtility]::HtmlEncode([string]$gr.ApproverGroupName))</strong></td>"
+            $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$gr.GroupType))</td>"
+            $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$gr.RolesApproved))</td>"
+            $html += "<td>$($gr.RoleCount)</td>"
+            $html += "<td>$($gr.MemberCount)</td>"
+            $html += "<td>$grGuest</td>"
+            $html += "<td>$grPriv</td>"
+            $html += '</tr>'
+        }
+        $html += '</tbody></table>'
+    }
+
+    # ── Section 27.3 — Approver Group Member Directory ───────────────────────────
+    $profileRowsFor273 = if ($null -ne $ApproverProfiles) { @($ApproverProfiles) } else { @() }
+    if ($profileRowsFor273.Count -gt 0) {
+        $html += '<h3 id="s27-3">27.3 Approver Group Member Directory</h3>'
+        $html += '<p>For each approver group, the table below lists every resolved member with their identity flags. This provides the complete answer to <em>&ldquo;who can approve activation for the roles in each approver group?&rdquo;</em></p>'
+
+        # Build group-keyed member lookup
+        $g273Map     = @{}
+        $g273Order   = [System.Collections.Generic.List[string]]::new()
+        $g273Meta    = @{}
+
+        foreach ($p in $profileRowsFor273) {
+            if ($p.ApproverObjectType -ne 'Group' -or [string]::IsNullOrWhiteSpace($p.ApproverObjectId)) { continue }
+            $gid273 = [string]$p.ApproverObjectId
+            if (-not $g273Map.ContainsKey($gid273)) {
+                [void]$g273Order.Add($gid273)
+                $g273Map[$gid273]  = [System.Collections.Generic.List[object]]::new()
+                $g273Meta[$gid273] = @{ Name = [string]$p.GroupName; Type = [string]$p.GroupType }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($p.UserId)) {
+                $g273Map[$gid273].Add($p)
+            }
+        }
+
+        # Build role-per-group lookup from groupRoleRows
+        $g273RoleMap = @{}
+        foreach ($gr in $groupRoleRows) {
+            if ($gr.ApproverGroupId) { $g273RoleMap[[string]$gr.ApproverGroupId] = [string]$gr.RolesApproved }
+        }
+
+        foreach ($gid273 in $g273Order) {
+            $meta273    = $g273Meta[$gid273]
+            $members273 = @($g273Map[$gid273] | Sort-Object UserPrincipalName -Unique)
+            $roles273   = if ($g273RoleMap.ContainsKey($gid273)) { $g273RoleMap[$gid273] } else { '' }
+            $guestCnt   = @($members273 | Where-Object { $_.IsGuest }).Count
+            $privCnt    = @($members273 | Where-Object { $_.IsPrivileged }).Count
+
+            if     ($guestCnt -gt 0 -or $privCnt -gt 0) { $g273Border = '#e65100'; $g273Bg = '#fff8f0' }
+            else                                          { $g273Border = '#1f4e78'; $g273Bg = '#f7fbff' }
+
+            $html += "<div style='border-left:4px solid $g273Border;background:$g273Bg;padding:12px 16px;margin:18px 0;border-radius:4px'>"
+            $html += "<h4 style='margin:0 0 6px 0'>$([System.Net.WebUtility]::HtmlEncode($meta273.Name)) <span style='font-weight:400;font-size:13px;color:#555'>($([System.Net.WebUtility]::HtmlEncode($meta273.Type)))</span></h4>"
+            if ($roles273) {
+                $html += "<p style='margin:0 0 8px 0;font-size:12px;color:#3f4f61'><strong>Approves for:</strong> $([System.Net.WebUtility]::HtmlEncode($roles273))</p>"
+            }
+            $html += "<p style='margin:0 0 4px 0;font-size:12px'><strong>Members: $($members273.Count)</strong> &nbsp; "
+            if ($guestCnt -gt 0) { $html += "<span style='color:#e65100;font-weight:700'>Guest: $guestCnt</span> &nbsp; " }
+            if ($privCnt  -gt 0) { $html += "<span style='color:#c62828;font-weight:700'>Privileged: $privCnt</span> &nbsp; " }
+            $html += '</p>'
+
+            if ($members273.Count -gt 0) {
+                $html += '<table style="font-size:12px;margin-top:6px">'
+                $html += '<thead><tr><th>Display Name</th><th>UPN</th><th>Type</th><th>Guest</th><th>Privileged</th><th>Naming OK</th><th>Licensed</th><th>Source</th></tr></thead>'
+                $html += '<tbody>'
+                foreach ($m273 in $members273) {
+                    $m273Guest  = if ($m273.IsGuest)            { "<span style='color:#e65100;font-weight:700'>Yes</span>" } else { 'No' }
+                    $m273Priv   = if ($m273.IsPrivileged)       { "<span style='color:#c62828;font-weight:700'>Yes</span>" } else { 'No' }
+                    $m273Name   = if ($m273.NamingCompliant -eq $false) { "<span style='color:#f9a825;font-weight:700'>No</span>" } else { 'Yes' }
+                    $m273Lic    = if ($m273.IsLicensed)         { 'Yes' } else { 'No' }
+                    $m273Source = if ($m273.MemberSource)       { [string]$m273.MemberSource } else { 'Direct' }
+                    $m273RowBg  = if ($m273.IsGuest) { " style='background:#fff8e1'" } elseif ($m273.IsPrivileged) { " style='background:#ffebee'" } else { '' }
+                    $html += "<tr$m273RowBg>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$m273.DisplayName))</td>"
+                    $html += "<td style='font-size:11px'>$([System.Net.WebUtility]::HtmlEncode([string]$m273.UserPrincipalName))</td>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode([string]$m273.UserType))</td>"
+                    $html += "<td>$m273Guest</td><td>$m273Priv</td><td>$m273Name</td><td>$m273Lic</td>"
+                    $html += "<td>$([System.Net.WebUtility]::HtmlEncode($m273Source))</td>"
+                    $html += '</tr>'
+                }
+                $html += '</tbody></table>'
+            }
+            else {
+                $html += '<p style="color:#c62828;font-size:12px"><em>No members could be resolved for this group.</em></p>'
+            }
+            $html += '</div>'
+        }
+    }
+
     $html += '</html>'
 
     $html | Out-File -FilePath $summaryHtmlPath -Encoding UTF8
@@ -1817,9 +1925,10 @@ function Invoke-FullPimReview {
         $data['CACoverage']       = @()
 
         # Pre-initialise approver analysis keys
-        $data['ApprovalAnalysis'] = @()
-        $data['ApproverProfiles'] = @()
-        $data['ApprovalFindings'] = @()
+        $data['ApprovalAnalysis']    = @()
+        $data['ApproverProfiles']    = @()
+        $data['ApproverGroupRoleMap'] = @()
+        $data['ApprovalFindings']    = @()
 
         # Pin a direct object reference to the data hashtable before the try/catch block.
         # In PS5.1 (WMF 5.1), when Build-PimReviewWorkbook.ps1 is dot-sourced its script-level
@@ -1880,10 +1989,11 @@ function Invoke-FullPimReview {
                         $policy | Add-Member -NotePropertyName GroupType         -NotePropertyValue $gt -Force
                     }
                 }
-                $pimData['ApprovalAnalysis'] = @($approverAnalysisResult.ApprovalAnalysis)
-                $pimData['ApproverProfiles'] = @($approverAnalysisResult.ApproverProfiles)
-                $pimData['ApprovalFindings'] = @($approverAnalysisResult.ApprovalFindings)
-                Write-PimLog -Message "Approver analysis complete: $(@($approverAnalysisResult.ApprovalAnalysis).Count) role(s) analysed, $(@($approverAnalysisResult.ApproverProfiles).Count) approver profile row(s)."
+                $pimData['ApprovalAnalysis']    = @($approverAnalysisResult.ApprovalAnalysis)
+                $pimData['ApproverProfiles']    = @($approverAnalysisResult.ApproverProfiles)
+                $pimData['ApproverGroupRoleMap'] = @($approverAnalysisResult.ApproverGroupRoleMap)
+                $pimData['ApprovalFindings']    = @($approverAnalysisResult.ApprovalFindings)
+                Write-PimLog -Message "Approver analysis complete: $(@($approverAnalysisResult.ApprovalAnalysis).Count) role(s) analysed, $(@($approverAnalysisResult.ApproverProfiles).Count) approver profile row(s), $(@($approverAnalysisResult.ApproverGroupRoleMap).Count) approver group(s)."
             }
         }
         catch {
@@ -1951,8 +2061,9 @@ function Invoke-FullPimReview {
             }
         }
 
-        Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix -NotePropertyValue @($roleElevationMatrix).Count -Force
-        Add-Member -InputObject $runMeta.Counts -NotePropertyName ApprovalAnalysis    -NotePropertyValue @($pimData.ApprovalAnalysis).Count  -Force
+        Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix  -NotePropertyValue @($roleElevationMatrix).Count -Force
+        Add-Member -InputObject $runMeta.Counts -NotePropertyName ApprovalAnalysis     -NotePropertyValue @($pimData.ApprovalAnalysis).Count  -Force
+        Add-Member -InputObject $runMeta.Counts -NotePropertyName ApproverGroups       -NotePropertyValue @($pimData.ApproverGroupRoleMap).Count  -Force
 
         $summaryInfo = New-PimSummaryReport `
             -OutputFolder      $runOutputFolder `
@@ -1980,7 +2091,8 @@ function Invoke-FullPimReview {
             -AuthStrengthData          @($pimData.AuthStrengthData) `
             -CACoverage                @($pimData.CACoverage) `
             -ApprovalAnalysis          @($pimData.ApprovalAnalysis) `
-            -ApproverProfiles          @($pimData.ApproverProfiles)
+            -ApproverProfiles          @($pimData.ApproverProfiles) `
+            -ApproverGroupRoleMap      @($pimData.ApproverGroupRoleMap)
 
         Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 

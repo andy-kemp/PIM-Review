@@ -41,9 +41,13 @@ function Get-ApproverIdsFromRule {
             foreach ($collectionName in @('primaryApprovers', 'escalationApprovers')) {
                 if ($stage.$collectionName) {
                     foreach ($approver in $stage.$collectionName) {
-                        if ($approver.id) {
-                            $ids += [string]$approver.id
-                        }
+                        # Graph returns groupId for #microsoft.graph.groupMembers,
+                        # userId for #microsoft.graph.singleUser, and id for other types.
+                        $approverId = if ($approver.groupId) { [string]$approver.groupId }
+                                      elseif ($approver.userId) { [string]$approver.userId }
+                                      elseif ($approver.id)     { [string]$approver.id }
+                                      else { $null }
+                        if ($approverId) { $ids += $approverId }
                     }
                 }
             }
@@ -51,6 +55,36 @@ function Get-ApproverIdsFromRule {
     }
 
     return @($ids | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-ApproverNamesFromRule {
+    <#
+    .SYNOPSIS
+    Extracts approver display names from the 'description' field already present in
+    the policy rule approver objects. Avoids redundant Graph calls for names.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Rule
+    )
+
+    $names = @()
+
+    if ($Rule.setting -and $Rule.setting.approvalStages) {
+        foreach ($stage in $Rule.setting.approvalStages) {
+            foreach ($collectionName in @('primaryApprovers', 'escalationApprovers')) {
+                if ($stage.$collectionName) {
+                    foreach ($approver in $stage.$collectionName) {
+                        # 'description' holds the display name for both group and user approvers
+                        if ($approver.description) { $names += [string]$approver.description }
+                    }
+                }
+            }
+        }
+    }
+
+    return @($names | Where-Object { $_ } | Select-Object -Unique)
 }
 
 function Resolve-ApproverDisplayNames {
@@ -87,8 +121,12 @@ function Convert-PolicyRuleToFlatRow {
     )
 
     $ruleType = ($Rule.'@odata.type' -replace '^#microsoft.graph\.', '')
-    $approverIds = Get-ApproverIdsFromRule -Rule $Rule
-    $approverDisplayNames = Resolve-ApproverDisplayNames -ApproverIds $approverIds
+    $approverIds   = Get-ApproverIdsFromRule -Rule $Rule
+    $approverNames = Get-ApproverNamesFromRule -Rule $Rule
+    # If names are already embedded in the policy rule (description field) use them directly;
+    # fall back to Graph resolution only when the description was absent.
+    $approverDisplayNames = if ($approverNames.Count -gt 0) { $approverNames }
+                            else { Resolve-ApproverDisplayNames -ApproverIds $approverIds }
 
     $operations = $null
     if ($Rule.operations) {

@@ -703,18 +703,69 @@ function Get-PimApproverAnalysis {
     $profileArr  = @($profileRows)
     $findingsArr = @($findingsList)
 
-    if (-not $ReturnObjectsOnly -and -not [string]::IsNullOrWhiteSpace($OutputFolder)) {
-        $rawFolder = Join-Path -Path $OutputFolder -ChildPath 'Raw'
-        Export-PimData -Data $analysisArr -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ApprovalAnalysis.csv')
-        Export-PimData -Data $profileArr  -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ApproverProfiles.csv')
+    # ── Approver-group-centric pivot ─────────────────────────────────────────────
+    # For each distinct approver group, list every role it is configured to approve
+    # and derive a flat member summary.  This produces the inverse view: "which roles
+    # does EIS-PIM-Approvers approve for?" rather than "who approves for Global Admin?".
+    $groupRoleMapRows = New-Object System.Collections.Generic.List[object]
+    $groupMembersMap  = @{}   # groupId -> List[profile rows]
+    $groupRolesMap    = @{}   # groupId -> List[roleName]
+    $groupMetaMap     = @{}   # groupId -> {GroupName, GroupType}
+
+    foreach ($p in $profileArr) {
+        if ($p.ApproverObjectType -ne 'Group' -or [string]::IsNullOrWhiteSpace($p.ApproverObjectId)) { continue }
+        $gid = [string]$p.ApproverObjectId
+
+        if (-not $groupMetaMap.ContainsKey($gid)) {
+            $groupMetaMap[$gid]  = @{ GroupName = [string]$p.GroupName; GroupType = [string]$p.GroupType }
+            $groupRolesMap[$gid] = New-Object 'System.Collections.Generic.List[string]'
+            $groupMembersMap[$gid] = New-Object 'System.Collections.Generic.List[object]'
+        }
+        if ($p.RoleName -and -not $groupRolesMap[$gid].Contains([string]$p.RoleName)) {
+            $groupRolesMap[$gid].Add([string]$p.RoleName)
+        }
+        # Only add member rows that have a real UserId (not sentinel empty-group rows)
+        if (-not [string]::IsNullOrWhiteSpace($p.UserId)) {
+            $groupMembersMap[$gid].Add($p)
+        }
     }
 
-    Write-PimLog -Message "Approver analysis complete: $($analysisArr.Count) roles analysed, $($profileArr.Count) approver profile rows, $($findingsArr.Count) findings generated."
+    foreach ($gid in $groupMetaMap.Keys) {
+        $meta         = $groupMetaMap[$gid]
+        $rolesList    = @($groupRolesMap[$gid])
+        $membersList  = @($groupMembersMap[$gid])
+        $uniqueMembers = @($membersList | Sort-Object UserId -Unique)
+        $guestCount   = @($uniqueMembers | Where-Object { $_.IsGuest }).Count
+        $privCount    = @($uniqueMembers | Where-Object { $_.IsPrivileged }).Count
+
+        $groupRoleMapRows.Add([pscustomobject]@{
+            ApproverGroupId   = $gid
+            ApproverGroupName = $meta.GroupName
+            GroupType         = $meta.GroupType
+            RolesApproved     = ($rolesList | Sort-Object) -join '; '
+            RoleCount         = $rolesList.Count
+            MemberCount       = $uniqueMembers.Count
+            GuestMembers      = $guestCount
+            PrivilegedMembers = $privCount
+        })
+    }
+
+    $groupRoleMapArr = @($groupRoleMapRows | Sort-Object ApproverGroupName)
+
+    if (-not $ReturnObjectsOnly -and -not [string]::IsNullOrWhiteSpace($OutputFolder)) {
+        $rawFolder = Join-Path -Path $OutputFolder -ChildPath 'Raw'
+        Export-PimData -Data $analysisArr     -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ApprovalAnalysis.csv')
+        Export-PimData -Data $profileArr      -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ApproverProfiles.csv')
+        Export-PimData -Data $groupRoleMapArr -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ApproverGroupRoleMap.csv')
+    }
+
+    Write-PimLog -Message "Approver analysis complete: $($analysisArr.Count) roles analysed, $($profileArr.Count) approver profile rows, $($groupRoleMapArr.Count) approver groups, $($findingsArr.Count) findings generated."
 
     return [pscustomobject]@{
-        ApprovalAnalysis = $analysisArr
-        ApproverProfiles = $profileArr
-        ApprovalFindings = $findingsArr
+        ApprovalAnalysis    = $analysisArr
+        ApproverProfiles    = $profileArr
+        ApproverGroupRoleMap = $groupRoleMapArr
+        ApprovalFindings    = $findingsArr
     }
 }
 

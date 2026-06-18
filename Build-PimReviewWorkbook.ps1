@@ -1499,7 +1499,8 @@ function Build-PimReviewWorkbook {
         @{ Name = '29_Auth_Strength';              Data = $authStrengthData },
         @{ Name = '30_CA_Coverage';                Data = $caCoverageData },
         @{ Name = '31_Approval_Analysis';          Data = if ($Data.ContainsKey('ApprovalAnalysis') -and $Data.ApprovalAnalysis) { @($Data.ApprovalAnalysis) } else { @() } },
-        @{ Name = '32_Approver_Profiles';          Data = if ($Data.ContainsKey('ApproverProfiles') -and $Data.ApproverProfiles) { @($Data.ApproverProfiles) } else { @() } }
+        @{ Name = '32_Approver_Profiles';          Data = if ($Data.ContainsKey('ApproverProfiles') -and $Data.ApproverProfiles) { @($Data.ApproverProfiles) } else { @() } },
+        @{ Name = '33_Approver_Group_Role_Map';    Data = if ($Data.ContainsKey('ApproverGroupRoleMap') -and $Data.ApproverGroupRoleMap) { @($Data.ApproverGroupRoleMap) } else { @() } }
     )
 
     foreach ($sheet in $sheetMap) {
@@ -1580,6 +1581,9 @@ function Build-PimReviewWorkbook {
             # Sheet 32 -- Approver Profiles: IsGuest (col K), IsPrivileged (col M)
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '32_Approver_Profiles' -Address 'K:K' -RuleType ContainsText -ConditionValue 'True'  -BackgroundColor 'Khaki'
             Add-ConditionalFormatting -Path $workbookPath -WorksheetName '32_Approver_Profiles' -Address 'M:M' -RuleType ContainsText -ConditionValue 'True'  -BackgroundColor 'LightSalmon'
+            # Sheet 33 -- Approver Group Role Map: GuestMembers (col G), PrivilegedMembers (col H)
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '33_Approver_Group_Role_Map' -Address 'G:G' -RuleType GreaterThan -ConditionValue '0' -BackgroundColor 'Khaki'
+            Add-ConditionalFormatting -Path $workbookPath -WorksheetName '33_Approver_Group_Role_Map' -Address 'H:H' -RuleType GreaterThan -ConditionValue '0' -BackgroundColor 'LightSalmon'
         }
         else {
             Write-PimLog -Level WARN -Message 'Conditional formatting skipped for this ImportExcel version (no Path parameter support).'
@@ -1611,6 +1615,7 @@ function Build-PimReviewWorkbook {
         LicensedPrivilegedAccounts = $licensedPrivilegedAccounts
         IdentityAssuranceProfiles  = $identityAssuranceProfiles
         ApprovalAnalysis           = if ($Data.ContainsKey('ApprovalAnalysis') -and $Data.ApprovalAnalysis) { @($Data.ApprovalAnalysis) } else { @() }
+        ApproverGroupRoleMap       = if ($Data.ContainsKey('ApproverGroupRoleMap') -and $Data.ApproverGroupRoleMap) { @($Data.ApproverGroupRoleMap) } else { @() }
     }
 }
 
