@@ -190,12 +190,17 @@ function Get-GraphPagedResults {
         $response = Invoke-GraphRequestWithRetry -Uri $nextUri -Method GET
 
         $hasValueProperty = $response -and ($null -ne $response.PSObject.Properties['value'])
-        if ($hasValueProperty -and $response.value) {
-            foreach ($item in $response.value) {
-                $results.Add($item)
+        if ($hasValueProperty) {
+            # A collection response: add its items. An empty collection adds nothing (previously the
+            # response envelope itself was added, creating a phantom row for empty groups/owners).
+            foreach ($item in @($response.value)) {
+                if ($null -ne $item) {
+                    $results.Add($item)
+                }
             }
         }
         elseif ($response) {
+            # A single-object response (for example /organization/{id}).
             $results.Add($response)
         }
 

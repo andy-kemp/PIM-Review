@@ -28,5 +28,8 @@
   "AzureSubscriptionIds": [],
   "AzureMaxOwnersPerSubscription": 3,
   "AzureIncludeResourceLevelAccess": false,
-  "AzureUseDeviceAuthentication": false
+  "AzureUseDeviceAuthentication": false,
+  "AzureActivityLogDays": 30,
+  "AzureDormantDays": 90,
+  "AzureSkipExtendedChecks": false
 }

@@ -16,7 +16,8 @@ Scopes rationale:
 - Conditional Access posture: Policy.Read.All
 - Access reviews coverage: AccessReview.Read.All
 - Workload identity hygiene: Application.Read.All
-- Azure RBAC review (principal resolution, group expansion): User.Read.All, Group.Read.All, Application.Read.All
+- Azure RBAC review: Directory.Read.All (batch principal lookup), User.Read.All, Group.Read.All,
+  Application.Read.All (credentials and owners), AuditLog.Read.All (last sign-in)
 
 .EXAMPLE
 ./Connect-GraphForPimReview.ps1 -IncludeLicenseDetails -IncludeApprovalHistory -Verbose
@@ -84,10 +85,13 @@ function Get-DefaultPimScopes {
     }
 
     if ($IncludeAzureRbac) {
-        # Resolve Azure role assignment principals and expand groups to their members.
+        # Resolve Azure role assignment principals (directoryObjects/getByIds needs Directory.Read.All),
+        # expand groups, read service principal credentials and owners, and last sign-in activity.
+        $null = $scopeSet.Add('Directory.Read.All')
         $null = $scopeSet.Add('User.Read.All')
         $null = $scopeSet.Add('Group.Read.All')
         $null = $scopeSet.Add('Application.Read.All')
+        $null = $scopeSet.Add('AuditLog.Read.All')
     }
 
     return @($scopeSet)

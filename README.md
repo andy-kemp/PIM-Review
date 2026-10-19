@@ -31,6 +31,8 @@ The implementation is read-only and idempotent for reporting.
 - `Get-PimApprovalData.ps1`
 - `Build-PimReviewWorkbook.ps1`
 - `Get-AzureRbacReview.ps1` (Azure RBAC review; runs on its own or from `Invoke-FullPimReview.ps1`)
+- `Get-AzureRbacInsights.ps1` (Azure review collectors: sign-in, Activity Log, Lighthouse, Key Vault/storage/SQL/AKS, workload credentials)
+- `New-AzureRbacReport.ps1` (Azure review HTML/Markdown report)
 - `Invoke-FullPimReview.ps1`
 - `Output/` (created/used at runtime)
 
@@ -76,8 +78,11 @@ The connection script requests least-privilege scopes based on enabled features:
   - `AccessReview.Read.All`
 - Workload identity hygiene:
   - `Application.Read.All`
-- Azure RBAC review (resolving principals and expanding groups):
-  - `User.Read.All`, `Group.Read.All`, `Application.Read.All`
+- Azure RBAC review:
+  - `Directory.Read.All` (batch lookup of role assignment principals)
+  - `User.Read.All`, `Group.Read.All` (users, guests, group members and owners)
+  - `Application.Read.All` (service principal credentials, owners and publisher)
+  - `AuditLog.Read.All` (last sign-in; also needs Entra ID P1)
   - plus `PrivilegedEligibilitySchedule.Read.AzureADGroup` when PIM for Groups is enabled, to include eligible group members
 
 ## Workbook Sheets
@@ -109,17 +114,19 @@ When ImportExcel is available, the workbook includes:
 
 When the Azure RBAC review is enabled, these sheets are appended to the same workbook:
 
-- `40_Az_Scorecard`
-- `41_Az_Findings`
+- `40_Az_Scorecard`, `41_Az_Findings`
 - `42_Az_Access_Matrix` (every user and workload identity down the side, every subscription across the top)
-- `43_Az_User_Summary` (one row per principal: highest tier, standing vs eligible, subscriptions and resources reachable)
+- `43_Az_User_Summary` (one row per principal: highest tier, standing vs eligible, reach, last sign-in, Azure changes)
 - `44_Az_User_Access` (one row per principal per assignment, group assignments expanded to members)
 - `45_Az_Role_Assignments` (every assignment, active and eligible, at every scope)
 - `46_Az_Subscriptions`
-- `47_Az_Group_Members`
-- `48_Az_Group_Owners`
-- `49_Az_Custom_Roles`
-- `50_Az_Coverage_Gaps`
+- `47_Az_Groups`, `48_Az_Group_Members`, `49_Az_Group_Owners`
+- `50_Az_Workload_Identities` (publisher, credentials, owners, managed identity host)
+- `51_Az_Custom_Roles`
+- `52_Az_Lighthouse`
+- `53_Az_KeyVaults`, `54_Az_KV_Access_Policies`, `55_Az_Storage`, `56_Az_SQL`, `57_Az_AKS`, `58_Az_Local_Auth`
+- `59_Az_Activity_By_Caller`, `60_Az_RBAC_Changes`
+- `61_Az_Deny_Assignments`, `62_Az_Coverage_Gaps`
 
 If ImportExcel is not installed, all CSV/JSON evidence is still exported.
 
@@ -144,6 +151,9 @@ Use `Config/pim-review.config.json` to define:
 - `AzureMaxOwnersPerSubscription`: standing Owner-tier users allowed per subscription before it is flagged (default 3)
 - `AzureIncludeResourceLevelAccess`: also write one row per resource per principal (can be very large)
 - `AzureUseDeviceAuthentication`: use device code sign-in for Azure
+- `AzureActivityLogDays`: how far back to read the Activity Log for usage and role changes (default 30, max 89, 0 to skip)
+- `AzureDormantDays`: no sign-in for this many days marks privileged access as dormant (default 90)
+- `AzureSkipExtendedChecks`: only collect role assignments (skips sign-in, Activity Log, Lighthouse, Key Vault/storage/SQL/AKS, workload credentials)
 
 ## How to Run
 
@@ -179,39 +189,48 @@ pwsh ./Invoke-FullPimReview.ps1 `
 
 ## Azure RBAC Review
 
-The Azure review reads every role assignment Azure Resource Manager knows about and answers "who can do what, where":
+The Azure review answers "who can do what, where, and are they using it", across the whole Azure estate.
 
-- Scopes: tenant root (`/`), every management group, subscription, resource group and resource
-- Active assignments, marked as permanent, time-bound or PIM-activated
-- PIM for Azure resources eligible assignments
-- Inheritance: an assignment at a management group shows up against every subscription and resource beneath it
-- Groups expanded transitively to users and service principals, including PIM for Groups eligible members
-- Group owners, because an owner can add themselves to a group that holds Azure roles
-- Role privilege tier worked out from each role's actual permissions, so custom roles are rated correctly:
-  - Critical: can create role assignments (Owner, User Access Administrator, Role Based Access Control Administrator, or a custom role with `Microsoft.Authorization/*` or `*`)
-  - High: full write (`*`) without role assignment rights (Contributor), or full data plane control (for example Key Vault Administrator)
+### What it collects
+
+- **Every role assignment**: tenant root (`/`), every management group, subscription, resource group and resource; active (permanent, time-bound or PIM-activated) and PIM-eligible.
+- **Inheritance**: an assignment at a management group is shown against every subscription and resource beneath it.
+- **People behind groups**: groups expanded transitively to users and service principals, including PIM for Groups eligible members; group owners and whether the group is role-assignable.
+- **Privilege tier from real permissions**, so custom roles are rated correctly and conditions are respected:
+  - Critical: can create role assignments (Owner, User Access Administrator, Role Based Access Control Administrator, custom roles with `Microsoft.Authorization/*` or `*`)
+  - High: full write (`*`) without role assignment rights (Contributor), full data plane control (for example Key Vault Administrator), or role assignment rights limited by a condition
   - Medium: other write or data actions
   - Low: read only
-- Resource counts per scope from Azure Resource Graph, so each assignment shows its blast radius
+- **Sign-in and identity hygiene**: last sign-in and on-premises sync for everyone with privileged access; for service principals, publisher (this tenant, Microsoft, or another organisation), credentials (secrets, certificates, federated, lifetime), and owners.
+- **Usage**: the Activity Log over a window (default 30 days) shows who actually made changes, so standing write access that is never used stands out, plus every role assignment granted or removed in that window.
+- **External access**: guests, and other organisations working in the subscriptions through Azure Lighthouse (not visible in role assignments).
+- **Access outside Azure RBAC**: Key Vaults on access policies (and who can read secrets), storage accounts with shared key access, SQL servers allowing SQL logins, AKS clusters with local accounts, and other resources with key-based (local) auth.
+- **Managed identities**: which resource each identity is attached to, because anyone who can run code there can use its access.
+- **Deny assignments** and **resource counts per scope** (blast radius).
+
+Microsoft platform identities (for example MS-PIM and Defender for Cloud scanners) are recognised and listed separately rather than raised as findings.
 
 ### Azure permissions needed
 
-- Reader at the Tenant Root Group gives full coverage (any role with `Microsoft.Authorization/*/read` works for the assignments themselves)
-- Anything the account cannot read is listed in `AzureCoverageGaps.csv` and in the report, rather than silently missing
+- Reader at the Tenant Root Group gives full coverage. With less (for example Security Reader), role assignments are still complete but resources are not readable, so resource counts, data plane checks and managed identity mapping are skipped for those subscriptions.
+- Anything the account cannot read is listed in `AzureCoverageGaps.csv` and in the report, rather than silently missing.
 
 ### Findings raised
 
-- Assignments at tenant root (`/`), usually left behind by Elevate Access
-- Standing (non-PIM) Critical or High tier access at subscription scope or above
-- Guests with any Azure access
-- Orphaned assignments to deleted principals
+- Root-scope assignments (usually left behind by Elevate Access)
+- Standing Critical or High access at subscription scope or above (one finding per person, listing every place)
+- Dormant privileged accounts, privileged accounts synced from on-premises AD, standing access never used
+- Guests with any Azure access, guests in privileged groups
+- Orphaned assignments to deleted principals (confirmed one by one), assignments to foreign principals
 - Disabled accounts that still hold access
-- Service principals and managed identities with broad Critical or High access
+- Workload identities with broad access; owners who could take them over; long-lived or secret-only credentials; dormant service principals; third-party applications with access; managed identities attached to compute
 - Custom roles with wildcard or role assignment permissions
 - Subscriptions with too many standing owners, or privileged access but no PIM
-- Groups holding privileged roles that have owners, or that are not role-assignable
-- Privileged roles assigned directly to users rather than through groups
-- Critical tier eligibility with no expiry
+- Group owner escalation paths, non-role-assignable privileged groups
+- Lighthouse delegations to other tenants
+- Key Vault access policies, AKS local accounts, SQL authentication, storage shared keys, local auth
+- Recent grants of Critical-tier roles
+- Privileged roles assigned directly to users, Critical-tier eligibility with no expiry
 
 ### Running it
 
@@ -228,29 +247,23 @@ On its own:
 ```powershell
 pwsh ./Get-AzureRbacReview.ps1 -TenantId <tenant-guid-or-domain>
 pwsh ./Get-AzureRbacReview.ps1 -TenantId <tenant> -SubscriptionId <sub1>,<sub2> -IncludeResourceLevelAccess
+pwsh ./Get-AzureRbacReview.ps1 -TenantId <tenant> -ActivityLogDays 89
+pwsh ./Get-AzureRbacReview.ps1 -TenantId <tenant> -SkipExtendedChecks
 ```
 
 You sign in twice: once to Microsoft Graph and once to Azure (`Connect-AzAccount`). Both are read-only.
 
 ### Azure outputs
 
-- `AzureRbac_Summary_<tenant>.html` and `.md` (scorecard, findings, subscriptions, privileged users and workload identities, custom roles, group owners, coverage gaps)
-- `Raw/AzureRoleAssignments.csv`
-- `Raw/AzureUserAccess.csv`
-- `Raw/AzureUserSummary.csv`
-- `Raw/AzureAccessMatrix.csv`
-- `Raw/AzureSubscriptionSummary.csv`
-- `Raw/AzureFindings.csv`
-- `Raw/AzureGroupMembers.csv`, `Raw/AzureGroupOwners.csv`
-- `Raw/AzureCustomRoles.csv`, `Raw/AzureRoleDefinitions.csv`
-- `Raw/AzureScorecard.csv`, `Raw/AzureCoverageGaps.csv`
-- `Raw/AzureResourceAccess.csv` (only with `-IncludeResourceLevelAccess`)
+- `AzureRbac_Summary_<tenant>.html` and `.md`: key insights, scorecard, findings by type, who can grant access, subscriptions and privileged access per subscription, people, groups, workload identities, external access, access outside RBAC, recent role changes, custom roles, all findings, coverage and method
+- `Raw/` CSV evidence: `AzureRoleAssignments`, `AzureUserAccess`, `AzureUserSummary`, `AzureAccessMatrix`, `AzureSubscriptionSummary`, `AzureFindings`, `AzureGroupSummary`, `AzureGroupMembers`, `AzureGroupOwners`, `AzureWorkloadIdentities`, `AzureCustomRoles`, `AzureRoleDefinitions`, `AzureLighthouseDelegations`, `AzureKeyVaults`, `AzureKeyVaultAccessPolicies`, `AzureStorageAccounts`, `AzureSqlServers`, `AzureAksClusters`, `AzureLocalAuthResources`, `AzureActivityByCaller`, `AzureRoleAssignmentChanges`, `AzureDenyAssignments`, `AzureScorecard`, `AzureCoverageGaps`
+- `Raw/AzureResourceAccess.csv` (only with `-IncludeResourceLevelAccess`): one row per resource per principal
 
 ### Azure limitations
 
-- Deny assignments and Azure Lighthouse delegations are not included.
 - Classic subscription administrators are not included (retired by Microsoft).
-- Data plane permissions outside Azure RBAC (Key Vault access policies, storage account keys, SQL logins) are not included.
+- Database users, Kubernetes RoleBindings and VM local administrators are not included.
+- The Activity Log keeps 90 days; very busy subscriptions are sampled (capped per subscription and flagged as a coverage gap).
 
 ## Raw Evidence Exports
 

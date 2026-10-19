@@ -119,6 +119,9 @@ function Get-PimConfig {
         AzureMaxOwnersPerSubscription = if ($null -ne $cfg.PSObject.Properties['AzureMaxOwnersPerSubscription']) { [int]$cfg.AzureMaxOwnersPerSubscription } else { 3 }
         AzureIncludeResourceLevelAccess = if ($null -ne $cfg.PSObject.Properties['AzureIncludeResourceLevelAccess']) { [bool]$cfg.AzureIncludeResourceLevelAccess } else { $false }
         AzureUseDeviceAuthentication  = if ($null -ne $cfg.PSObject.Properties['AzureUseDeviceAuthentication']) { [bool]$cfg.AzureUseDeviceAuthentication } else { $false }
+        AzureActivityLogDays          = if ($null -ne $cfg.PSObject.Properties['AzureActivityLogDays']) { [int]$cfg.AzureActivityLogDays } else { 30 }
+        AzureDormantDays              = if ($null -ne $cfg.PSObject.Properties['AzureDormantDays']) { [int]$cfg.AzureDormantDays } else { 90 }
+        AzureSkipExtendedChecks       = if ($null -ne $cfg.PSObject.Properties['AzureSkipExtendedChecks']) { [bool]$cfg.AzureSkipExtendedChecks } else { $false }
     }
 }
 
@@ -2121,6 +2124,9 @@ function Invoke-FullPimReview {
                     IncludeResourceLevelAccess = [bool]$config.AzureIncludeResourceLevelAccess
                     IncludePimForGroups        = [bool]$config.IncludePimForGroups
                     UseDeviceAuthentication    = [bool]$config.AzureUseDeviceAuthentication
+                    ActivityLogDays            = [int]$config.AzureActivityLogDays
+                    DormantDays                = [int]$config.AzureDormantDays
+                    SkipExtendedChecks         = [bool]$config.AzureSkipExtendedChecks
                     SkipGraphConnect           = $true
                     ForceReConnect             = [bool]$ForceReConnect
                 }

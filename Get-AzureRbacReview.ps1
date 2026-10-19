@@ -4,30 +4,29 @@ Read-only Azure RBAC review: every role assignment (active and PIM-eligible) fro
 down to individual resources, with groups expanded to users.
 
 .DESCRIPTION
-Enumerates management groups, subscriptions, resource groups and resources, then collects:
+Collects:
 - Active Azure role assignments at every scope (root, management group, subscription, resource group, resource)
-- PIM for Azure resources eligible assignments, and whether active assignments are permanent,
-  time-bound or PIM-activated
-- Role definitions (built-in and custom) with a privilege tier derived from the actual permissions
-- Principal resolution through Microsoft Graph (users, guests, groups, service principals, managed identities)
-- Transitive group membership, PIM for Groups eligible members, and group owners (escalation paths)
+- PIM for Azure resources eligible assignments, and whether active ones are permanent, time-bound or PIM-activated
+- Role definitions with a privilege tier derived from their actual permissions (conditions respected)
+- Principals resolved through Microsoft Graph, with deleted principals confirmed one by one
+- Transitive group membership, PIM for Groups eligible members, group owners
+- Service principal publisher, credentials and owners; managed identity host resources
+- Last sign-in and on-premises sync status for everyone with privileged access
+- Activity Log: who actually made changes, and role assignment changes, over a window (default 30 days)
+- Azure Lighthouse delegations to other tenants
+- Access outside RBAC: Key Vault access policies, storage shared keys, SQL authentication, AKS local accounts,
+  key-based (local) authentication
+- Deny assignments
 - Resource counts per scope (blast radius) via Azure Resource Graph
 
-Outputs (CSV evidence, optional Excel sheets, HTML and Markdown summary):
-- AzureRoleAssignments.csv      one row per assignment (active and eligible)
-- AzureUserAccess.csv           one row per principal per assignment, groups expanded to members
-- AzureUserSummary.csv          one row per user / service principal with reach and highest privilege
-- AzureAccessMatrix.csv         principals down the side, subscriptions across the top
-- AzureSubscriptionSummary.csv  one row per subscription
-- AzureFindings.csv             risk findings with recommendations
-- AzureResourceAccess.csv       (optional) one row per resource per principal
+Outputs: an HTML and Markdown report, CSV evidence in Raw/, and workbook sheets 40-62 when ImportExcel is present.
 
 This script is read-only. It does not modify Azure or Entra configuration.
 
 Required access:
-- Azure: Reader (or any role with Microsoft.Authorization/*/read) at the Tenant Root Group for full coverage.
-  Anything the account cannot see is recorded in AzureCoverageGaps.csv.
-- Graph (delegated): User.Read.All, Group.Read.All, Application.Read.All.
+- Azure: Reader at the Tenant Root Group for full coverage. Anything the account cannot read is recorded in
+  AzureCoverageGaps.csv and the report.
+- Graph (delegated): Directory.Read.All, User.Read.All, Group.Read.All, Application.Read.All, AuditLog.Read.All.
   Optional: PrivilegedEligibilitySchedule.Read.AzureADGroup for PIM for Groups eligible members.
 
 .EXAMPLE
@@ -44,8 +43,13 @@ param(
     [string[]]$SubscriptionId,
     [string]$WorkbookPath,
     [int]$MaxOwnersPerSubscription = 3,
+    [int]$ActivityLogDays = 30,
+    [int]$MaxActivityEventsPerSubscription = 25000,
+    [int]$DormantDays = 90,
     [switch]$IncludeResourceLevelAccess,
     [switch]$IncludePimForGroups,
+    [switch]$SkipActivityLog,
+    [switch]$SkipExtendedChecks,
     [switch]$UseDeviceAuthentication,
     [switch]$SkipGraphConnect,
     [switch]$ForceReConnect
@@ -61,6 +65,10 @@ if (-not (Get-Module -Name PimReview.Common)) {
 if (-not (Get-Command -Name Connect-GraphForPimReview -ErrorAction SilentlyContinue)) {
     . (Join-Path -Path $PSScriptRoot -ChildPath 'Connect-GraphForPimReview.ps1')
 }
+
+# Function-only companions: extended collectors and the HTML/Markdown report.
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-AzureRbacInsights.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'New-AzureRbacReport.ps1')
 
 $script:AzRbacArmBase = 'https://management.azure.com'
 $script:AzRbacCoverageGaps = New-Object System.Collections.ArrayList
@@ -228,7 +236,9 @@ function Invoke-ArmRequest {
             return ($content | ConvertFrom-Json)
         }
 
-        $retryable = ($statusCode -eq 429) -or ($statusCode -ge 500) -or ($statusCode -eq -1)
+        # A client-side exception (-1: expired token, no context, DNS) is retried once only; retrying it
+        # with full backoff makes a run look hung for minutes per call.
+        $retryable = ($statusCode -eq 429) -or ($statusCode -ge 500) -or ($statusCode -eq -1 -and $attempt -lt 1)
         if (-not $retryable -or $attempt -ge $MaxRetries) {
             $errorMessage = $content
             try {
@@ -466,6 +476,7 @@ function Get-AzRbacRoleTier {
     $permissions = @(Get-AzRbacProp -InputObject $props -Name 'permissions')
 
     $canManageRbac = $false
+    $rbacConstrained = $false
     $fullControl = $false
     $anyWrite = $false
     $dataFullControl = $false
@@ -489,7 +500,14 @@ function Get-AzRbacRoleTier {
                         break
                     }
                 }
-                if (-not $excluded) { $canManageRbac = $true }
+                if (-not $excluded) {
+                    $canManageRbac = $true
+                    # Some built-in roles (for example Defender scanner operators, Storage Actions task
+                    # assignment) can only assign specific roles, enforced by a condition on the definition.
+                    if (-not [string]::IsNullOrWhiteSpace([string](Get-AzRbacProp -InputObject $perm -Name 'condition'))) {
+                        $rbacConstrained = $true
+                    }
+                }
             }
 
             if ($action -eq '*') { $fullControl = $true }
@@ -507,9 +525,13 @@ function Get-AzRbacRoleTier {
 
     $tier = 'Low'
     $reason = 'Read-only control plane permissions.'
-    if ($canManageRbac) {
+    if ($canManageRbac -and -not $rbacConstrained) {
         $tier = 'Critical'
         $reason = 'Can create role assignments (Microsoft.Authorization/roleAssignments/write) and therefore grant itself or others any access.'
+    }
+    elseif ($canManageRbac -and $rbacConstrained) {
+        $tier = 'High'
+        $reason = 'Can create role assignments, but only those allowed by a condition built into the role definition.'
     }
     elseif ($fullControl) {
         $tier = 'High'
@@ -532,6 +554,7 @@ function Get-AzRbacRoleTier {
         Tier            = $tier
         Reason          = $reason
         CanManageRbac   = $canManageRbac
+        RbacConstrained = $rbacConstrained
         WildcardActions = (@($wildcardActions) -join '; ')
     }
 }
@@ -552,11 +575,32 @@ function Get-AzRbacTierRank {
 # Principal resolution (Microsoft Graph)
 # ---------------------------------------------------------------------------------------------
 
+function Get-AzRbacUserDetail {
+    param([string]$UserId)
+
+    # Own cache: the shared Resolve-User cache may already hold this user from the Entra phase with a
+    # narrower $select (no userType), which would hide guests.
+    if (-not $script:AzRbacUserCache) { $script:AzRbacUserCache = @{} }
+    $key = $UserId.ToLowerInvariant()
+    if ($script:AzRbacUserCache.ContainsKey($key)) { return $script:AzRbacUserCache[$key] }
+
+    $user = $null
+    try {
+        $user = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/users/${UserId}?`$select=id,displayName,userPrincipalName,userType,accountEnabled,mail,onPremisesSyncEnabled,createdDateTime"
+    }
+    catch {
+        Write-Verbose "User $UserId not readable: $($_.Exception.Message)"
+    }
+    $script:AzRbacUserCache[$key] = $user
+    return $user
+}
+
 function Resolve-AzRbacPrincipals {
     [CmdletBinding()]
     param(
         [string[]]$PrincipalIds,
-        [hashtable]$ArmPrincipalTypes
+        [hashtable]$ArmPrincipalTypes,
+        [string]$TenantGuid
     )
 
     $map = @{}
@@ -566,7 +610,11 @@ function Resolve-AzRbacPrincipals {
     $graphAvailable = $null -ne (Get-Command -Name Get-MgContext -ErrorAction SilentlyContinue) -and $null -ne (Get-MgContext -ErrorAction SilentlyContinue)
 
     $resolvedObjects = @{}
+    $lookupStatus = @{}
+
     if ($graphAvailable) {
+        # Batch lookup first (needs Directory.Read.All). Anything not returned is checked one by one so a
+        # failed or partial batch never turns live accounts into 'deleted'.
         for ($i = 0; $i -lt $ids.Count; $i += 1000) {
             $end = [Math]::Min($i + 999, $ids.Count - 1)
             $batch = @($ids[$i..$end])
@@ -580,12 +628,35 @@ function Resolve-AzRbacPrincipals {
                 }
             }
             catch {
-                Write-PimLog -Level WARN -Message "Directory object lookup failed for a batch of $($batch.Count) principals: $($_.Exception.Message)"
+                Write-PimLog -Level WARN -Message "Batch directory lookup failed for $($batch.Count) principals ($($_.Exception.Message)). Falling back to one-by-one lookups."
+            }
+        }
+
+        $missing = @($ids | Where-Object { -not $resolvedObjects.ContainsKey($_) })
+        if ($missing.Count -gt 0) {
+            Write-PimLog -Message "Confirming $($missing.Count) principals not returned by the batch lookup."
+        }
+        foreach ($id in $missing) {
+            try {
+                $obj = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/directoryObjects/$id"
+                if ($obj) { $resolvedObjects[$id] = $obj }
+            }
+            catch {
+                $msg = [string]$_.Exception.Message
+                if ($msg -match 'Request_ResourceNotFound|NotFound|404|does not exist') {
+                    $lookupStatus[$id] = 'Deleted'
+                }
+                else {
+                    $lookupStatus[$id] = 'LookupFailed'
+                    Write-Verbose "Lookup failed for principal $id : $msg"
+                }
             }
         }
     }
     else {
-        Write-PimLog -Level WARN -Message 'No Microsoft Graph context. Principals will be reported by object ID only.'
+        Write-PimLog -Level WARN -Message 'No Microsoft Graph context. Principals will be reported by object ID only and groups will not be expanded.'
+        Add-AzRbacCoverageGap -Scope 'Microsoft Graph' -Operation 'Principal resolution' -StatusCode '' -Message 'No Microsoft Graph connection; names, guests, group members and deleted principals cannot be determined.'
+        foreach ($id in $ids) { $lookupStatus[$id] = 'LookupFailed' }
     }
 
     foreach ($id in $ids) {
@@ -596,16 +667,19 @@ function Resolve-AzRbacPrincipals {
         if ($resolvedObjects.ContainsKey($id)) { $obj = $resolvedObjects[$id] }
 
         $principal = [ordered]@{
-            PrincipalId        = $id
-            Resolved           = $null -ne $obj
-            PrincipalType      = $armType
-            Category           = 'Unknown'
-            DisplayName        = $null
-            UserPrincipalName  = $null
-            UserType           = $null
-            AccountEnabled     = $null
-            AppId              = $null
-            IsAssignableToRole = $null
+            PrincipalId            = $id
+            Resolved               = $null -ne $obj
+            PrincipalType          = $armType
+            Category               = 'Unknown'
+            DisplayName            = $null
+            UserPrincipalName      = $null
+            UserType               = $null
+            AccountEnabled         = $null
+            OnPremisesSyncEnabled  = $null
+            AppId                  = $null
+            AppOwnerOrganizationId = $null
+            ServicePrincipalType   = $null
+            IsAssignableToRole     = $null
         }
 
         if ($obj) {
@@ -614,35 +688,71 @@ function Resolve-AzRbacPrincipals {
 
             if ($odataType -match 'user') {
                 $principal.PrincipalType = 'User'
-                $user = Resolve-User -UserId $id -Select 'id,displayName,userPrincipalName,userType,accountEnabled,mail'
+                $user = Get-AzRbacUserDetail -UserId $id
                 if (-not $user) { $user = $obj }
                 $principal.DisplayName = Get-AzRbacProp -InputObject $user -Name 'displayName'
                 $principal.UserPrincipalName = Get-AzRbacProp -InputObject $user -Name 'userPrincipalName'
                 $principal.UserType = Get-AzRbacProp -InputObject $user -Name 'userType'
                 $principal.AccountEnabled = Get-AzRbacProp -InputObject $user -Name 'accountEnabled'
+                $principal.OnPremisesSyncEnabled = Get-AzRbacProp -InputObject $user -Name 'onPremisesSyncEnabled'
                 $isGuest = ($principal.UserType -eq 'Guest') -or ([string]$principal.UserPrincipalName -match '#EXT#')
                 $principal.Category = if ($isGuest) { 'Guest' } else { 'Member' }
             }
             elseif ($odataType -match 'group') {
                 $principal.PrincipalType = 'Group'
                 $principal.Category = 'Group'
-                $group = Resolve-Group -GroupId $id
-                if ($group) {
-                    $principal.IsAssignableToRole = Get-AzRbacProp -InputObject $group -Name 'isAssignableToRole'
+                try {
+                    $group = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/groups/${id}?`$select=id,displayName,isAssignableToRole,securityEnabled,groupTypes"
+                    $principal.IsAssignableToRole = [bool](Get-AzRbacProp -InputObject $group -Name 'isAssignableToRole')
+                }
+                catch {
+                    Write-Verbose "Group details not readable for $id"
                 }
             }
             elseif ($odataType -match 'servicePrincipal') {
                 $principal.PrincipalType = 'ServicePrincipal'
-                $principal.AppId = Get-AzRbacProp -InputObject $obj -Name 'appId'
-                $principal.AccountEnabled = Get-AzRbacProp -InputObject $obj -Name 'accountEnabled'
-                $spType = [string](Get-AzRbacProp -InputObject $obj -Name 'servicePrincipalType')
-                $principal.Category = if ($spType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                $sp = $obj
+                try {
+                    $sp = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/${id}?`$select=id,displayName,appId,servicePrincipalType,appOwnerOrganizationId,accountEnabled"
+                }
+                catch {
+                    Write-Verbose "Service principal details not readable for $id"
+                }
+                $principal.DisplayName = Get-AzRbacProp -InputObject $sp -Name 'displayName'
+                $principal.AppId = Get-AzRbacProp -InputObject $sp -Name 'appId'
+                $principal.AccountEnabled = Get-AzRbacProp -InputObject $sp -Name 'accountEnabled'
+                $principal.ServicePrincipalType = [string](Get-AzRbacProp -InputObject $sp -Name 'servicePrincipalType')
+                $principal.AppOwnerOrganizationId = [string](Get-AzRbacProp -InputObject $sp -Name 'appOwnerOrganizationId')
+
+                if (Test-AzRbacMicrosoftPrincipal -AppOwnerOrganizationId $principal.AppOwnerOrganizationId -DisplayName $principal.DisplayName -ServicePrincipalType $principal.ServicePrincipalType) {
+                    $principal.Category = 'MicrosoftPlatform'
+                }
+                elseif ($principal.ServicePrincipalType -eq 'ManagedIdentity') {
+                    $principal.Category = 'ManagedIdentity'
+                }
+                elseif ($principal.AppOwnerOrganizationId -and $TenantGuid -and $principal.AppOwnerOrganizationId -ne $TenantGuid) {
+                    $principal.Category = 'ExternalApp'
+                }
+                else {
+                    $principal.Category = 'ServicePrincipal'
+                }
             }
         }
         else {
             if (-not $principal.PrincipalType) { $principal.PrincipalType = 'Unknown' }
-            $principal.DisplayName = "Unresolved ($id)"
-            $principal.Category = 'Unresolved'
+            $status = if ($lookupStatus.ContainsKey($id)) { $lookupStatus[$id] } else { 'LookupFailed' }
+            if ($armType -match '^Foreign') {
+                $principal.Category = 'ForeignPrincipal'
+                $principal.DisplayName = "Foreign principal ($id)"
+            }
+            elseif ($status -eq 'Deleted') {
+                $principal.Category = 'Deleted'
+                $principal.DisplayName = "Deleted $armType ($id)"
+            }
+            else {
+                $principal.Category = 'LookupFailed'
+                $principal.DisplayName = "Unresolved ($id)"
+            }
         }
 
         $map[$id] = [pscustomobject]$principal
@@ -667,7 +777,7 @@ function Get-AzRbacGroupExpansion {
     $expansionFailed = $false
 
     $rawMembers = $null
-    $uri = "https://graph.microsoft.com/v1.0/groups/$GroupId/transitiveMembers?`$select=id,displayName,userPrincipalName,userType,accountEnabled,appId,servicePrincipalType"
+    $uri = "https://graph.microsoft.com/v1.0/groups/$GroupId/transitiveMembers?`$select=id,displayName,userPrincipalName,userType,accountEnabled,appId,servicePrincipalType,appOwnerOrganizationId"
     try {
         $rawMembers = @(Get-GraphPagedResults -Uri $uri)
     }
@@ -685,6 +795,9 @@ function Get-AzRbacGroupExpansion {
     if (-not $expansionFailed) {
         foreach ($m in @($rawMembers)) {
             if ($null -eq $m) { continue }
+            $memberId = [string](Get-AzRbacProp -InputObject $m -Name 'id')
+            if ([string]::IsNullOrWhiteSpace($memberId)) { continue }
+
             $type = Get-PrincipalType -Principal $m
             if ($type -ne 'User' -and $type -ne 'ServicePrincipal') { continue }
 
@@ -694,18 +807,23 @@ function Get-AzRbacGroupExpansion {
                 if ($isGuest) { $category = 'Guest' }
             }
             else {
-                $category = if ((Get-AzRbacProp -InputObject $m -Name 'servicePrincipalType') -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                $spType = [string](Get-AzRbacProp -InputObject $m -Name 'servicePrincipalType')
+                $category = if ($spType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                if (Test-AzRbacMicrosoftPrincipal -AppOwnerOrganizationId ([string](Get-AzRbacProp -InputObject $m -Name 'appOwnerOrganizationId')) -DisplayName ([string](Get-AzRbacProp -InputObject $m -Name 'displayName')) -ServicePrincipalType $spType) {
+                    $category = 'MicrosoftPlatform'
+                }
             }
 
             $null = $members.Add([pscustomobject]@{
                 GroupId           = $GroupId
                 GroupDisplayName  = $GroupDisplayName
-                MemberId          = ([string](Get-AzRbacProp -InputObject $m -Name 'id')).ToLowerInvariant()
+                MemberId          = $memberId.ToLowerInvariant()
                 DisplayName       = Get-AzRbacProp -InputObject $m -Name 'displayName'
                 UserPrincipalName = Get-AzRbacProp -InputObject $m -Name 'userPrincipalName'
                 PrincipalType     = $type
                 Category          = $category
                 AccountEnabled    = Get-AzRbacProp -InputObject $m -Name 'accountEnabled'
+                AppId             = Get-AzRbacProp -InputObject $m -Name 'appId'
                 MembershipType    = 'Member (transitive)'
                 MembershipEnd     = $null
             })
@@ -722,7 +840,7 @@ function Get-AzRbacGroupExpansion {
                 $principalId = [string](Get-AzRbacProp -InputObject $e -Name 'principalId')
                 if ([string]::IsNullOrWhiteSpace($principalId)) { continue }
 
-                $user = Resolve-User -UserId $principalId -Select 'id,displayName,userPrincipalName,userType,accountEnabled,mail'
+                $user = Get-AzRbacUserDetail -UserId $principalId
                 $userType = Get-AzRbacProp -InputObject $user -Name 'userType'
                 $upn = Get-AzRbacProp -InputObject $user -Name 'userPrincipalName'
                 $category = if (($userType -eq 'Guest') -or ([string]$upn -match '#EXT#')) { 'Guest' } else { 'Member' }
@@ -736,6 +854,7 @@ function Get-AzRbacGroupExpansion {
                     PrincipalType     = 'User'
                     Category          = $category
                     AccountEnabled    = Get-AzRbacProp -InputObject $user -Name 'accountEnabled'
+                    AppId             = $null
                     MembershipType    = 'Eligible member (PIM for Groups)'
                     MembershipEnd     = Get-AzRbacProp -InputObject $e -Name 'endDateTime'
                 })
@@ -750,10 +869,12 @@ function Get-AzRbacGroupExpansion {
     try {
         foreach ($o in @(Get-GraphPagedResults -Uri $ownerUri)) {
             if ($null -eq $o) { continue }
+            $ownerId = [string](Get-AzRbacProp -InputObject $o -Name 'id')
+            if ([string]::IsNullOrWhiteSpace($ownerId)) { continue }
             $null = $owners.Add([pscustomobject]@{
                 GroupId                = $GroupId
                 GroupDisplayName       = $GroupDisplayName
-                OwnerId                = Get-AzRbacProp -InputObject $o -Name 'id'
+                OwnerId                = $ownerId
                 OwnerDisplayName       = Get-AzRbacProp -InputObject $o -Name 'displayName'
                 OwnerUserPrincipalName = Get-AzRbacProp -InputObject $o -Name 'userPrincipalName'
                 OwnerType              = Get-PrincipalType -Principal $o
@@ -772,232 +893,8 @@ function Get-AzRbacGroupExpansion {
 }
 
 # ---------------------------------------------------------------------------------------------
-# Report rendering
+# Workbook
 # ---------------------------------------------------------------------------------------------
-
-function ConvertTo-AzRbacHtmlTable {
-    param(
-        [object[]]$Rows,
-        [string[]]$Columns
-    )
-
-    if (-not $Rows -or @($Rows).Count -eq 0) {
-        return '<p>No rows</p>'
-    }
-
-    $sb = New-Object System.Text.StringBuilder
-    $null = $sb.Append('<table><thead><tr>')
-    foreach ($col in $Columns) { $null = $sb.Append("<th>$col</th>") }
-    $null = $sb.Append('</tr></thead><tbody>')
-
-    foreach ($row in $Rows) {
-        $null = $sb.Append('<tr>')
-        foreach ($col in $Columns) {
-            $value = Get-AzRbacProp -InputObject $row -Name $col
-            $text = if ($null -eq $value) { '' } else { [System.Net.WebUtility]::HtmlEncode([string]$value) }
-            if ($col -eq 'RiskRating' -or $col -eq 'Status' -or $col -eq 'HighestTier') {
-                $cls = switch ([string]$value) { 'Critical' { 'badge-critical' } 'High' { 'badge-high' } 'Red' { 'badge-high' } 'Medium' { 'badge-medium' } 'Amber' { 'badge-medium' } 'Low' { 'badge-low' } 'Green' { 'badge-low' } default { '' } }
-                if ($cls) { $text = "<span class=""$cls"">$text</span>" }
-            }
-            $null = $sb.Append("<td>$text</td>")
-        }
-        $null = $sb.Append('</tr>')
-    }
-
-    $null = $sb.Append('</tbody></table>')
-    return $sb.ToString()
-}
-
-function ConvertTo-AzRbacMarkdownTable {
-    param(
-        [object[]]$Rows,
-        [string[]]$Columns
-    )
-
-    if (-not $Rows -or @($Rows).Count -eq 0) {
-        return @('- No rows')
-    }
-
-    $lines = @()
-    $lines += '| ' + ($Columns -join ' | ') + ' |'
-    $lines += '| ' + (($Columns | ForEach-Object { '---' }) -join ' | ') + ' |'
-    foreach ($row in $Rows) {
-        $values = @()
-        foreach ($col in $Columns) {
-            $value = Get-AzRbacProp -InputObject $row -Name $col
-            if ($null -eq $value) { $values += '' }
-            else { $values += ([string]$value -replace '\|', '/' -replace '[\r\n]+', ' ') }
-        }
-        $lines += '| ' + ($values -join ' | ') + ' |'
-    }
-    return $lines
-}
-
-function New-AzRbacSummaryReport {
-    [CmdletBinding()]
-    param(
-        [string]$OutputFolder,
-        [string]$TenantLabel,
-        [string]$TenantIdValue,
-        [object[]]$Scorecard,
-        [object[]]$Findings,
-        [object[]]$SubscriptionSummary,
-        [object[]]$UserSummary,
-        [object[]]$CustomRoles,
-        [object[]]$GroupOwners,
-        [object[]]$CoverageGaps
-    )
-
-    $assessmentDate = (Get-Date).ToString('yyyy-MM-dd')
-    $fileStem = Get-SafeFileName -Name ("AzureRbac_Summary_{0}" -f $TenantLabel)
-    $mdPath = Join-Path -Path $OutputFolder -ChildPath "$fileStem.md"
-    $htmlPath = Join-Path -Path $OutputFolder -ChildPath "$fileStem.html"
-
-    $severityOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
-    $sortedFindings = @($Findings | Sort-Object -Property @{ Expression = { if ($severityOrder.ContainsKey($_.RiskRating)) { $severityOrder[$_.RiskRating] } else { 9 } } }, FindingType, Subject)
-
-    $findingTypeSummary = @(
-        $Findings |
-        Group-Object -Property RiskRating, FindingType |
-        ForEach-Object {
-            $first = $_.Group[0]
-            [pscustomobject]@{
-                RiskRating     = $first.RiskRating
-                FindingType    = $first.FindingType
-                Count          = $_.Count
-                Recommendation = $first.Recommendation
-            }
-        } |
-        Sort-Object -Property @{ Expression = { if ($severityOrder.ContainsKey($_.RiskRating)) { $severityOrder[$_.RiskRating] } else { 9 } } }, @{ Expression = 'Count'; Descending = $true }
-    )
-
-    $topUsers = @(
-        $UserSummary |
-        Where-Object { $_.PrincipalCategory -in @('Member', 'Guest') -and (Get-AzRbacTierRank -Tier $_.HighestTier) -ge 3 } |
-        Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, @{ Expression = 'StandingPrivilegedCount'; Descending = $true }, @{ Expression = 'SubscriptionsReachable'; Descending = $true } |
-        Select-Object -First 100
-    )
-
-    $workloads = @(
-        $UserSummary |
-        Where-Object { $_.PrincipalCategory -in @('ServicePrincipal', 'ManagedIdentity') -and (Get-AzRbacTierRank -Tier $_.HighestTier) -ge 3 } |
-        Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, @{ Expression = 'SubscriptionsReachable'; Descending = $true } |
-        Select-Object -First 100
-    )
-
-    $critCount = @($Findings | Where-Object { $_.RiskRating -eq 'Critical' }).Count
-    $highCount = @($Findings | Where-Object { $_.RiskRating -eq 'High' }).Count
-    $medCount = @($Findings | Where-Object { $_.RiskRating -eq 'Medium' }).Count
-    $lowCount = @($Findings | Where-Object { $_.RiskRating -eq 'Low' }).Count
-
-    $subCols = @('SubscriptionName', 'State', 'ManagementGroupPath', 'Resources', 'EffectivePrincipals', 'EffectiveOwners', 'StandingOwners', 'EligibleOwners', 'GuestsWithAccess', 'PimEligibleAssignments', 'RiskRating')
-    $userCols = @('DisplayName', 'UserPrincipalName', 'PrincipalCategory', 'HighestTier', 'StandingPrivilegedCount', 'EligiblePrivilegedCount', 'SubscriptionsReachable', 'ResourcesReachable', 'CriticalAccess')
-    $workloadCols = @('DisplayName', 'PrincipalCategory', 'HighestTier', 'SubscriptionsReachable', 'ResourcesReachable', 'CriticalAccess')
-    $findingCols = @('RiskRating', 'FindingType', 'Subject', 'RoleName', 'ScopeName', 'Details')
-
-    # Markdown
-    $md = @()
-    $md += '# Azure RBAC Privileged Access Review'
-    $md += ''
-    $md += "- Client: $TenantLabel"
-    $md += "- Tenant ID: $TenantIdValue"
-    $md += "- Assessment date: $assessmentDate"
-    $md += "- Findings: $critCount Critical, $highCount High, $medCount Medium, $lowCount Low"
-    $md += ''
-    $md += '## 1. Scorecard'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $Scorecard -Columns @('Metric', 'Value', 'Status', 'Target', 'Commentary'))
-    $md += ''
-    $md += '## 2. Findings by Type'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $findingTypeSummary -Columns @('RiskRating', 'FindingType', 'Count', 'Recommendation'))
-    $md += ''
-    $md += '## 3. Subscriptions'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $SubscriptionSummary -Columns $subCols)
-    $md += ''
-    $md += '## 4. Users with Critical or High Azure Access'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $topUsers -Columns $userCols)
-    $md += ''
-    $md += '## 5. Service Principals and Managed Identities with Critical or High Azure Access'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $workloads -Columns $workloadCols)
-    $md += ''
-    $md += '## 6. Custom Roles in Use'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $CustomRoles -Columns @('RoleName', 'PrivilegeTier', 'AssignmentCount', 'WildcardActions', 'AssignableScopes'))
-    $md += ''
-    $md += '## 7. Owners of Groups that Hold Azure Roles'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $GroupOwners -Columns @('GroupDisplayName', 'HighestGroupTier', 'IsAssignableToRole', 'OwnerDisplayName', 'OwnerUserPrincipalName', 'OwnerType'))
-    $md += ''
-    $md += '## 8. Detailed Findings'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $sortedFindings -Columns $findingCols)
-    $md += ''
-    $md += '## 9. Coverage Gaps'
-    $md += ''
-    $md += 'Scopes the review account could not read. Assignments at these scopes are missing from this report.'
-    $md += ''
-    $md += (ConvertTo-AzRbacMarkdownTable -Rows $CoverageGaps -Columns @('Scope', 'Operation', 'StatusCode'))
-    $md | Out-File -FilePath $mdPath -Encoding UTF8
-
-    # HTML
-    $css = 'body{font-family:Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#222}h1{font-size:30px;margin-bottom:8px}h2{font-size:21px;margin-top:28px;margin-bottom:10px;border-bottom:1px solid #e3e3e3;padding-bottom:4px}.cover{border:2px solid #1f4e78;padding:20px;border-radius:8px;background:#f7fbff;margin-bottom:18px}.meta{margin:6px 0}.section-intro{margin:8px 0 12px 0;color:#2c3e50;font-size:13px;line-height:1.6}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #ddd;padding:5px 7px;vertical-align:top}th{background:#f4f6f8;text-align:left}.badge-critical{background:#b71c1c;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-high{background:#c62828;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-medium{background:#e65100;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.badge-low{background:#2e7d32;color:#fff;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.counts span{margin-right:10px}'
-    $labelHtml = [System.Net.WebUtility]::HtmlEncode($TenantLabel)
-
-    $html = New-Object System.Text.StringBuilder
-    $null = $html.Append('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Azure RBAC Review - ' + $labelHtml + '</title>')
-    $null = $html.Append("<style>$css</style></head><body>")
-    $null = $html.Append('<div class="cover"><h1>Azure RBAC Privileged Access Review</h1>')
-    $null = $html.Append("<div class=""meta""><strong>Client:</strong> $labelHtml</div>")
-    $null = $html.Append("<div class=""meta""><strong>Tenant ID:</strong> $TenantIdValue</div>")
-    $null = $html.Append('<div class="meta"><strong>Assessment Type:</strong> Azure resource role assignments (active and PIM-eligible), management group to resource</div>')
-    $null = $html.Append("<div class=""meta""><strong>Assessment Date:</strong> $assessmentDate</div>")
-    $null = $html.Append("<div class=""meta counts""><strong>Findings:</strong> <span class=""badge-critical"">$critCount Critical</span><span class=""badge-high"">$highCount High</span><span class=""badge-medium"">$medCount Medium</span><span class=""badge-low"">$lowCount Low</span></div>")
-    $null = $html.Append('</div>')
-
-    $null = $html.Append('<h2>1. Scorecard</h2>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $Scorecard -Columns @('Metric', 'Value', 'Status', 'Target', 'Commentary')))
-
-    $null = $html.Append('<h2>2. Findings by Type</h2>')
-    $null = $html.Append('<p class="section-intro">Each finding type with the number of occurrences and the recommended remediation. Full detail is in section 8 and in AzureFindings.csv.</p>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $findingTypeSummary -Columns @('RiskRating', 'FindingType', 'Count', 'Recommendation')))
-
-    $null = $html.Append('<h2>3. Subscriptions</h2>')
-    $null = $html.Append('<p class="section-intro">Effective counts include access inherited from management groups and the tenant root, and access granted through group membership. Owners means principals holding a Critical-tier role (can manage role assignments) at or above the subscription.</p>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $SubscriptionSummary -Columns $subCols))
-
-    $null = $html.Append('<h2>4. Users with Critical or High Azure Access</h2>')
-    $null = $html.Append('<p class="section-intro">Users (members and guests) whose highest Azure role is Critical or High tier, directly or through groups. Standing means active without PIM. The full list of every user is in AzureUserSummary.csv and the subscription matrix in AzureAccessMatrix.csv.</p>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $topUsers -Columns $userCols))
-
-    $null = $html.Append('<h2>5. Service Principals and Managed Identities with Critical or High Azure Access</h2>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $workloads -Columns $workloadCols))
-
-    $null = $html.Append('<h2>6. Custom Roles in Use</h2>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $CustomRoles -Columns @('RoleName', 'PrivilegeTier', 'AssignmentCount', 'WildcardActions', 'AssignableScopes')))
-
-    $null = $html.Append('<h2>7. Owners of Groups that Hold Azure Roles</h2>')
-    $null = $html.Append('<p class="section-intro">Group owners can add members, so each owner below can grant themselves the Azure access the group holds.</p>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $GroupOwners -Columns @('GroupDisplayName', 'HighestGroupTier', 'IsAssignableToRole', 'OwnerDisplayName', 'OwnerUserPrincipalName', 'OwnerType')))
-
-    $null = $html.Append('<h2>8. Detailed Findings</h2>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $sortedFindings -Columns $findingCols))
-
-    $null = $html.Append('<h2>9. Coverage Gaps</h2>')
-    $null = $html.Append('<p class="section-intro">Scopes the review account could not read. Assignments at these scopes are missing from this report. Grant Reader at the Tenant Root Group and re-run for complete coverage.</p>')
-    $null = $html.Append((ConvertTo-AzRbacHtmlTable -Rows $CoverageGaps -Columns @('Scope', 'Operation', 'StatusCode')))
-
-    $null = $html.Append('</body></html>')
-    [System.IO.File]::WriteAllText($htmlPath, $html.ToString(), [System.Text.Encoding]::UTF8)
-
-    return [pscustomobject]@{
-        MarkdownPath = $mdPath
-        HtmlPath     = $htmlPath
-    }
-}
 
 function Write-AzRbacWorkbookSheets {
     [CmdletBinding()]
@@ -1046,15 +943,24 @@ function Get-AzureRbacReview {
         [string[]]$SubscriptionId,
         [string]$WorkbookPath,
         [int]$MaxOwnersPerSubscription = 3,
+        [int]$ActivityLogDays = 30,
+        [int]$MaxActivityEventsPerSubscription = 25000,
+        [int]$DormantDays = 90,
         [switch]$IncludeResourceLevelAccess,
         [switch]$IncludePimForGroups,
+        [switch]$SkipActivityLog,
+        [switch]$SkipExtendedChecks,
         [switch]$UseDeviceAuthentication,
         [switch]$SkipGraphConnect,
         [switch]$ForceReConnect
     )
 
     $script:AzRbacCoverageGaps = New-Object System.Collections.ArrayList
+    $script:AzRbacUserCache = @{}
     $runStamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $nowUtc = (Get-Date).ToUniversalTime()
+    $userCategories = @('Member', 'Guest')
+    $workloadCategories = @('ServicePrincipal', 'ManagedIdentity', 'ExternalApp')
 
     # ---- Connections ------------------------------------------------------------------------
     if (-not $SkipGraphConnect) {
@@ -1065,6 +971,9 @@ function Get-AzureRbacReview {
     if (Get-Command -Name Get-MgContext -ErrorAction SilentlyContinue) {
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
     }
+    if (-not $graphContext) {
+        Write-PimLog -Level WARN -Message 'No Microsoft Graph connection. The review will list assignments by object ID only; guests, group members and deleted principals cannot be identified.'
+    }
 
     $azTenant = $TenantId
     if ($graphContext -and $graphContext.TenantId) {
@@ -1072,7 +981,11 @@ function Get-AzureRbacReview {
     }
 
     $azContext = Connect-AzureForRbacReview -TenantId $azTenant -UseDeviceAuthentication:$UseDeviceAuthentication -ForceReConnect:$ForceReConnect
-    $tenantGuid = [string]$azContext.Tenant.Id
+    $tenantGuid = ([string]$azContext.Tenant.Id).ToLowerInvariant()
+
+    if ($graphContext -and $graphContext.TenantId -and ([string]$graphContext.TenantId).ToLowerInvariant() -ne $tenantGuid) {
+        throw "Microsoft Graph is connected to tenant $($graphContext.TenantId) but Azure is connected to $tenantGuid. Reconnect with -ForceReConnect."
+    }
 
     if ($IncludePimForGroups -and $graphContext) {
         $hasPimGroupScope = @($graphContext.Scopes) -contains 'PrivilegedEligibilitySchedule.Read.AzureADGroup'
@@ -1092,8 +1005,8 @@ function Get-AzureRbacReview {
         catch {
             Write-Verbose 'Organization display name not available; using tenant ID as label.'
         }
-        $TenantLabel = (Get-SafeFileName -Name $TenantLabel) -replace '\s+', '_'
     }
+    $TenantLabel = (Get-SafeFileName -Name $TenantLabel) -replace '\s+', '_'
 
     if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
         $OutputFolder = Join-Path -Path (Join-Path -Path (Join-Path -Path $PSScriptRoot -ChildPath 'Output') -ChildPath $TenantLabel) -ChildPath "AzureRun-$runStamp"
@@ -1118,7 +1031,7 @@ function Get-AzureRbacReview {
     $subscriptions = @(
         $subscriptionsRaw | Where-Object {
             $subTenant = [string](Get-AzRbacProp -InputObject $_ -Name 'tenantId')
-            [string]::IsNullOrWhiteSpace($subTenant) -or $subTenant -eq $tenantGuid
+            [string]::IsNullOrWhiteSpace($subTenant) -or $subTenant.ToLowerInvariant() -eq $tenantGuid
         }
     )
 
@@ -1165,13 +1078,13 @@ function Get-AzureRbacReview {
                     }
                 }
                 $subMgChain[$sid] = $ids
-                # ARG returns the chain nearest-first; present it root-first.
                 [array]::Reverse($names)
                 $subMgPath[$sid] = ($names -join ' > ')
             }
         }
         catch {
             Write-PimLog -Level WARN -Message "Resource Graph hierarchy query failed ($($_.Exception.Message)). Falling back to management group descendants."
+            Add-AzRbacCoverageGap -Scope '/' -Operation 'Resource Graph: management group hierarchy' -StatusCode '' -Message $_.Exception.Message
             foreach ($mgId in @($mgNames.Keys)) {
                 $desc = @(Get-ArmPagedResults -Uri "$($script:AzRbacArmBase)/providers/Microsoft.Management/managementGroups/$mgId/descendants?api-version=2021-04-01" -Operation 'List management group descendants' -Scope "/providers/Microsoft.Management/managementGroups/$mgId" -TolerateErrors)
                 foreach ($d in $desc) {
@@ -1208,6 +1121,18 @@ function Get-AzureRbacReview {
         }
     }
 
+    # Resource Graph only returns resources the review account can read. A subscription with resource
+    # groups but no visible resources almost always means missing Reader, not an empty subscription.
+    $subResourcesVisible = @{}
+    foreach ($sid in $subIds) {
+        $visible = $resourceCountBySub.ContainsKey($sid)
+        $subResourcesVisible[$sid] = $visible
+        if (-not $visible -and $rgCountBySub.ContainsKey($sid) -and $rgCountBySub[$sid] -gt 0) {
+            Add-AzRbacCoverageGap -Scope "/subscriptions/$sid" -Operation 'Resources not visible' -StatusCode '' -Message "$($subNames[$sid]) has $($rgCountBySub[$sid]) resource group(s) but no resources are readable. Grant Reader for resource counts, data plane checks and managed identity mapping."
+        }
+    }
+    $visibleSubIds = @($subIds | Where-Object { $subResourcesVisible[$_] })
+
     $resourceCountByMg = @{}
     foreach ($sid in $subIds) {
         if (-not $subMgChain.ContainsKey($sid) -or -not $resourceCountBySub.ContainsKey($sid)) { continue }
@@ -1223,13 +1148,14 @@ function Get-AzureRbacReview {
     $scheduleByOrigin = @{}
 
     $scopeTargets = New-Object System.Collections.ArrayList
-    $null = $scopeTargets.Add(@{ Scope = ''; Display = '/'; Filter = '&$filter=atScope()' })
+    # PIM schedule APIs do not support the tenant root; only role assignments are read there.
+    $null = $scopeTargets.Add(@{ Scope = ''; Display = '/'; Filter = '&$filter=atScope()'; Pim = $false })
     foreach ($mgId in @($mgNames.Keys)) {
-        $null = $scopeTargets.Add(@{ Scope = "/providers/Microsoft.Management/managementGroups/$mgId"; Display = "/providers/Microsoft.Management/managementGroups/$mgId"; Filter = '&$filter=atScope()' })
+        $null = $scopeTargets.Add(@{ Scope = "/providers/Microsoft.Management/managementGroups/$mgId"; Display = "/providers/Microsoft.Management/managementGroups/$mgId"; Filter = '&$filter=atScope()'; Pim = $true })
     }
     foreach ($sid in $subIds) {
         # No filter at subscription scope: returns assignments at, above and below the subscription.
-        $null = $scopeTargets.Add(@{ Scope = "/subscriptions/$sid"; Display = "/subscriptions/$sid"; Filter = '' })
+        $null = $scopeTargets.Add(@{ Scope = "/subscriptions/$sid"; Display = "/subscriptions/$sid"; Filter = ''; Pim = $true })
     }
 
     $targetIndex = 0
@@ -1242,6 +1168,8 @@ function Get-AzureRbacReview {
             $raId = ([string](Get-AzRbacProp -InputObject $ra -Name 'id')).ToLowerInvariant()
             if ($raId -and -not $assignmentById.ContainsKey($raId)) { $assignmentById[$raId] = $ra }
         }
+
+        if (-not $target.Pim) { continue }
 
         $eligUri = "$($script:AzRbacArmBase)$($target.Scope)/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=2020-10-01$($target.Filter)"
         foreach ($el in @(Get-ArmPagedResults -Uri $eligUri -Operation 'List PIM eligibility' -Scope $target.Display -TolerateErrors)) {
@@ -1263,9 +1191,35 @@ function Get-AzureRbacReview {
     Write-Progress -Activity 'Azure RBAC review' -Completed
     Write-PimLog -Message "Collected $($assignmentById.Count) active role assignments and $($eligibilityByKey.Count) PIM-eligible assignments."
 
+    # ---- Extended collection (outside RBAC, usage, external access) -------------------------
+    $lighthouse = @()
+    $denyAssignments = @()
+    $resourceSecurity = [pscustomobject]@{ KeyVaults = @(); KeyVaultAccessPolicies = @(); StorageAccounts = @(); SqlServers = @(); AksClusters = @(); LocalAuthResources = @() }
+    $miHosts = @{}
+    $activity = $null
+
+    if (-not $SkipExtendedChecks -and $subIds.Count -gt 0) {
+        Write-PimLog -Message 'Reading Azure Lighthouse delegations.'
+        $lighthouse = @(Get-AzRbacLighthouseDelegations -SubscriptionIds $subIds -SubscriptionNames $subNames)
+
+        Write-PimLog -Message 'Reading deny assignments.'
+        $denyAssignments = @(Get-AzRbacDenyAssignments -SubscriptionIds $subIds -SubscriptionNames $subNames)
+
+        if ($visibleSubIds.Count -gt 0) {
+            Write-PimLog -Message 'Checking access paths outside Azure RBAC (Key Vault, storage, SQL, AKS, local auth).'
+            $resourceSecurity = Get-AzRbacResourceSecurity -SubscriptionIds $visibleSubIds -SubscriptionNames $subNames
+
+            Write-PimLog -Message 'Mapping managed identities to their resources.'
+            $miHosts = Get-AzRbacManagedIdentityHosts -SubscriptionIds $visibleSubIds
+        }
+
+        if (-not $SkipActivityLog -and $ActivityLogDays -gt 0) {
+            Write-PimLog -Message "Reading Activity Log for the last $ActivityLogDays days (who actually made changes)."
+            $activity = Get-AzRbacActivityLog -SubscriptionIds $subIds -SubscriptionNames $subNames -Days $ActivityLogDays -MaxEventsPerSubscription $MaxActivityEventsPerSubscription
+        }
+    }
+
     # ---- Role definitions -------------------------------------------------------------------
-    # Only the role definitions actually referenced are fetched. Listing every definition returns
-    # several MB of JSON, which Windows PowerShell 5.1 handles poorly.
     Write-PimLog -Message 'Reading role definitions in use.'
     $roleDefs = @{}
     $referencedRoleIds = @{}
@@ -1277,6 +1231,9 @@ function Get-AzureRbacReview {
         $rid = [string](Get-AzRbacProp -InputObject (Get-AzRbacProp -InputObject $el -Name 'properties') -Name 'roleDefinitionId')
         if ($rid) { $referencedRoleIds[(Get-AzRbacLastSegment -Value $rid)] = $rid }
     }
+    foreach ($guid in @(@($lighthouse | ForEach-Object { $_.RoleDefinitionGuid }) + @(if ($activity) { $activity.RbacChanges | ForEach-Object { $_.RoleDefinitionGuid } }))) {
+        if ($guid -and -not $referencedRoleIds.ContainsKey($guid)) { $referencedRoleIds[$guid] = "/providers/Microsoft.Authorization/roleDefinitions/$guid" }
+    }
     foreach ($guid in @($referencedRoleIds.Keys)) {
         if ($roleDefs.ContainsKey($guid)) { continue }
         try {
@@ -1285,6 +1242,7 @@ function Get-AzureRbacReview {
         }
         catch {
             Write-PimLog -Level WARN -Message "Unable to read role definition $($referencedRoleIds[$guid]): $($_.Exception.Message)"
+            Add-AzRbacCoverageGap -Scope $referencedRoleIds[$guid] -Operation 'Read role definition' -StatusCode '' -Message "Assignments of this role are reported with tier Unknown. $($_.Exception.Message)"
         }
     }
 
@@ -1303,6 +1261,16 @@ function Get-AzureRbacReview {
             WildcardActions    = $tierInfo.WildcardActions
             AssignableScopes   = (@(Get-AzRbacProp -InputObject $props -Name 'assignableScopes') -join '; ')
         }
+    }
+    $roleNameOf = {
+        param($Guid)
+        if ($Guid -and $roleInfo.ContainsKey($Guid)) { return $roleInfo[$Guid].RoleName }
+        return $Guid
+    }
+    $roleTierOf = {
+        param($Guid)
+        if ($Guid -and $roleInfo.ContainsKey($Guid)) { return $roleInfo[$Guid].PrivilegeTier }
+        return 'Unknown'
     }
 
     # ---- Normalise assignments --------------------------------------------------------------
@@ -1339,14 +1307,23 @@ function Get-AzureRbacReview {
         }
 
         $condition = [string](Get-AzRbacProp -InputObject $Props -Name 'condition')
+        $hasCondition = -not [string]::IsNullOrWhiteSpace($condition)
+
+        $tier = if ($role) { $role.PrivilegeTier } else { 'Unknown' }
+        $tierNote = $null
+        if ($tier -eq 'Critical' -and $hasCondition) {
+            # A condition on the assignment (for example 'Role Based Access Control Administrator, may only
+            # assign Reader') limits which roles can be granted.
+            $tier = 'High'
+            $tierNote = 'Role assignment rights limited by a condition on this assignment.'
+        }
+
         $resourcesInScope = $null
         switch ($scopeInfo.ScopeLevel) {
             'Root' { $resourcesInScope = $totalResources }
-            'ManagementGroup' {
-                if ($resourceCountByMg.ContainsKey($scopeInfo.ManagementGroupId)) { $resourcesInScope = $resourceCountByMg[$scopeInfo.ManagementGroupId] } else { $resourcesInScope = 0 }
-            }
-            'Subscription' { if ($resourceCountBySub.ContainsKey($scopeInfo.SubscriptionId)) { $resourcesInScope = $resourceCountBySub[$scopeInfo.SubscriptionId] } else { $resourcesInScope = 0 } }
-            'ResourceGroup' { $k = "$($scopeInfo.SubscriptionId)|$($scopeInfo.ResourceGroup)"; if ($resourceCountByRg.ContainsKey($k)) { $resourcesInScope = $resourceCountByRg[$k] } else { $resourcesInScope = 0 } }
+            'ManagementGroup' { if ($resourceCountByMg.ContainsKey($scopeInfo.ManagementGroupId)) { $resourcesInScope = $resourceCountByMg[$scopeInfo.ManagementGroupId] } else { $resourcesInScope = 0 } }
+            'Subscription' { if ($resourceCountBySub.ContainsKey($scopeInfo.SubscriptionId)) { $resourcesInScope = $resourceCountBySub[$scopeInfo.SubscriptionId] } }
+            'ResourceGroup' { $k = "$($scopeInfo.SubscriptionId)|$($scopeInfo.ResourceGroup)"; if ($resourceCountByRg.ContainsKey($k)) { $resourcesInScope = $resourceCountByRg[$k] } elseif ($subResourcesVisible.ContainsKey($scopeInfo.SubscriptionId) -and $subResourcesVisible[$scopeInfo.SubscriptionId]) { $resourcesInScope = 0 } }
             'Resource' { $resourcesInScope = 1 }
         }
 
@@ -1362,7 +1339,8 @@ function Get-AzureRbacReview {
             RoleDefinitionGuid = $roleGuid
             RoleName           = if ($role) { $role.RoleName } else { "Unknown role ($roleGuid)" }
             RoleType           = if ($role) { $role.RoleType } else { 'Unknown' }
-            PrivilegeTier      = if ($role) { $role.PrivilegeTier } else { 'Unknown' }
+            PrivilegeTier      = $tier
+            TierNote           = $tierNote
             Scope              = $scopeInfo.Scope
             ScopeLevel         = $scopeInfo.ScopeLevel
             ScopeName          = $scopeInfo.ScopeName
@@ -1372,7 +1350,7 @@ function Get-AzureRbacReview {
             ResourceGroup      = $scopeInfo.ResourceGroup
             ResourceType       = $scopeInfo.ResourceType
             ResourcesInScope   = $resourcesInScope
-            HasCondition       = -not [string]::IsNullOrWhiteSpace($condition)
+            HasCondition       = $hasCondition
             Condition          = $condition
             CreatedOn          = Get-AzRbacProp -InputObject $Props -Name 'createdOn'
             CreatedBy          = Get-AzRbacProp -InputObject $Props -Name 'createdBy'
@@ -1391,18 +1369,21 @@ function Get-AzureRbacReview {
         & $addAssignment $props 'Eligible' $elId 'roleEligibilityScheduleInstances'
     }
 
-    # Out-of-scope subscriptions can surface through 'below' listings at management group level. Keep them,
-    # but they will not appear in the subscription matrix.
-
     # ---- Resolve principals and expand groups -----------------------------------------------
-    Write-PimLog -Message "Resolving $(@($normalised | Select-Object -ExpandProperty PrincipalId -Unique).Count) principals through Microsoft Graph."
-    $principals = Resolve-AzRbacPrincipals -PrincipalIds @($normalised | ForEach-Object { $_.PrincipalId }) -ArmPrincipalTypes $armPrincipalTypes
+    $idsToResolve = New-Object System.Collections.ArrayList
+    foreach ($a in $normalised) { $null = $idsToResolve.Add($a.PrincipalId) }
+    foreach ($p in @($resourceSecurity.KeyVaultAccessPolicies)) { if ($p.ObjectId) { $null = $idsToResolve.Add($p.ObjectId) } }
+    if ($activity) { foreach ($c in @($activity.RbacChanges)) { if ($c.PrincipalId) { $null = $idsToResolve.Add($c.PrincipalId) } } }
+
+    $uniqueIds = @($idsToResolve | Where-Object { $_ } | Select-Object -Unique)
+    Write-PimLog -Message "Resolving $($uniqueIds.Count) principals through Microsoft Graph."
+    $principals = Resolve-AzRbacPrincipals -PrincipalIds $uniqueIds -ArmPrincipalTypes $armPrincipalTypes -TenantGuid $tenantGuid
 
     foreach ($a in $normalised) {
         $p = $null
         if ($principals.ContainsKey($a.PrincipalId)) { $p = $principals[$a.PrincipalId] }
         $a | Add-Member -NotePropertyName PrincipalType -NotePropertyValue $(if ($p) { $p.PrincipalType } else { $a.ArmPrincipalType }) -Force
-        $a | Add-Member -NotePropertyName PrincipalCategory -NotePropertyValue $(if ($p) { $p.Category } else { 'Unresolved' }) -Force
+        $a | Add-Member -NotePropertyName PrincipalCategory -NotePropertyValue $(if ($p) { $p.Category } else { 'LookupFailed' }) -Force
         $a | Add-Member -NotePropertyName PrincipalDisplayName -NotePropertyValue $(if ($p) { $p.DisplayName } else { $a.PrincipalId }) -Force
         $a | Add-Member -NotePropertyName PrincipalUserPrincipalName -NotePropertyValue $(if ($p) { $p.UserPrincipalName } else { $null }) -Force
         $a | Add-Member -NotePropertyName AccountEnabled -NotePropertyValue $(if ($p) { $p.AccountEnabled } else { $null }) -Force
@@ -1432,24 +1413,25 @@ function Get-AzureRbacReview {
 
     # ---- Effective access rows (one per principal per assignment) ---------------------------
     $accessRows = New-Object System.Collections.ArrayList
+    $memberAppIds = @{}
     foreach ($a in $normalised) {
         $base = [ordered]@{
-            RoleName         = $a.RoleName
-            RoleType         = $a.RoleType
-            PrivilegeTier    = $a.PrivilegeTier
-            ScopeLevel       = $a.ScopeLevel
-            ScopeName        = $a.ScopeName
-            SubscriptionName = $a.SubscriptionName
-            ResourceGroup    = $a.ResourceGroup
-            ResourcesInScope = $a.ResourcesInScope
-            AssignmentState  = $a.AssignmentState
-            AssignmentType   = $a.AssignmentType
-            EndDateTime      = $a.EndDateTime
-            HasCondition     = $a.HasCondition
-            Scope            = $a.Scope
-            SubscriptionId   = $a.SubscriptionId
+            RoleName          = $a.RoleName
+            RoleType          = $a.RoleType
+            PrivilegeTier     = $a.PrivilegeTier
+            ScopeLevel        = $a.ScopeLevel
+            ScopeName         = $a.ScopeName
+            SubscriptionName  = $a.SubscriptionName
+            ResourceGroup     = $a.ResourceGroup
+            ResourcesInScope  = $a.ResourcesInScope
+            AssignmentState   = $a.AssignmentState
+            AssignmentType    = $a.AssignmentType
+            EndDateTime       = $a.EndDateTime
+            HasCondition      = $a.HasCondition
+            Scope             = $a.Scope
+            SubscriptionId    = $a.SubscriptionId
             ManagementGroupId = $a.ManagementGroupId
-            AssignmentId     = $a.AssignmentId
+            AssignmentId      = $a.AssignmentId
         }
 
         if ($a.PrincipalType -eq 'Group' -and $groupExpansion.ContainsKey($a.PrincipalId)) {
@@ -1468,6 +1450,7 @@ function Get-AzureRbacReview {
             }
 
             foreach ($m in $members) {
+                if ($m.AppId) { $memberAppIds[$m.MemberId] = $m.AppId }
                 $effectiveState = $a.AssignmentState
                 if ($m.MembershipType -like 'Eligible*') { $effectiveState = 'Eligible' }
                 $isStanding = ($effectiveState -eq 'Active') -and ($a.AssignmentType -eq 'Permanent')
@@ -1508,7 +1491,6 @@ function Get-AzureRbacReview {
         return @()
     }
 
-    # Index every non-group access row by the subscriptions it reaches (including inheritance).
     $rowsBySub = @{}
     foreach ($r in $accessRows) {
         if ($r.PrincipalCategory -eq 'Group') { continue }
@@ -1521,12 +1503,92 @@ function Get-AzureRbacReview {
         }
     }
 
+    # ---- Sign-in activity, workload details, activity mapping --------------------------------
+    $principalRowsById = @{}
+    foreach ($grp in @($accessRows | Where-Object { $_.PrincipalCategory -ne 'Group' } | Group-Object -Property PrincipalId)) {
+        $principalRowsById[$grp.Name] = @($grp.Group)
+    }
+
+    $signIn = $null
+    $workloads = @{}
+    if (-not $SkipExtendedChecks -and $graphContext) {
+        $userIdsForSignIn = @($principalRowsById.Keys | Where-Object { $principalRowsById[$_][0].PrincipalCategory -in $userCategories })
+        $spIdsForDetail = @($principalRowsById.Keys | Where-Object { $principalRowsById[$_][0].PrincipalCategory -in $workloadCategories })
+
+        Write-PimLog -Message "Reading credentials, owners and publisher for $($spIdsForDetail.Count) workload identities."
+        $workloads = Get-AzRbacWorkloadDetails -ServicePrincipalIds $spIdsForDetail -TenantGuid $tenantGuid
+
+        $spAppIds = New-Object System.Collections.ArrayList
+        foreach ($id in $spIdsForDetail) {
+            $appId = $null
+            if ($workloads.ContainsKey($id)) { $appId = $workloads[$id].AppId }
+            elseif ($principals.ContainsKey($id)) { $appId = $principals[$id].AppId }
+            elseif ($memberAppIds.ContainsKey($id)) { $appId = $memberAppIds[$id] }
+            if ($appId) { $null = $spAppIds.Add($appId) }
+        }
+
+        $signIn = Get-AzRbacSignInActivity -UserIds $userIdsForSignIn -ServicePrincipalAppIds @($spAppIds)
+    }
+
+    # Activity Log 'caller' is a UPN for users and an object or application ID for service principals.
+    $activityByPrincipal = @{}
+    $activitySubsRead = @{}
+    if ($activity) {
+        $callerToPrincipal = @{}
+        foreach ($prinId in @($principalRowsById.Keys)) {
+            $first = $principalRowsById[$prinId][0]
+            $callerToPrincipal[$prinId] = $prinId
+            if ($first.UserPrincipalName) { $callerToPrincipal[([string]$first.UserPrincipalName).ToLowerInvariant()] = $prinId }
+            $appId = $null
+            if ($workloads.ContainsKey($prinId)) { $appId = $workloads[$prinId].AppId }
+            elseif ($principals.ContainsKey($prinId)) { $appId = $principals[$prinId].AppId }
+            if ($appId) { $callerToPrincipal[([string]$appId).ToLowerInvariant()] = $prinId }
+        }
+
+        foreach ($row in @($activity.CallerActivity)) {
+            $activitySubsRead[$row.SubscriptionId] = $true
+            $prinId = $null
+            if ($callerToPrincipal.ContainsKey($row.Caller)) { $prinId = $callerToPrincipal[$row.Caller] }
+            $row | Add-Member -NotePropertyName PrincipalId -NotePropertyValue $prinId -Force
+            $row | Add-Member -NotePropertyName HasAzureRole -NotePropertyValue ($null -ne $prinId) -Force
+            if (-not $prinId) { continue }
+            if (-not $activityByPrincipal.ContainsKey($prinId)) { $activityByPrincipal[$prinId] = [pscustomobject]@{ Events = 0; LastChange = $null; Subscriptions = New-Object System.Collections.ArrayList } }
+            $entry = $activityByPrincipal[$prinId]
+            $entry.Events += $row.ChangeEvents
+            if ($row.LastChange -and (($null -eq $entry.LastChange) -or $row.LastChange -gt $entry.LastChange)) { $entry.LastChange = $row.LastChange }
+            $null = $entry.Subscriptions.Add($row.SubscriptionName)
+        }
+
+        foreach ($c in @($activity.RbacChanges)) {
+            $p = $null
+            if ($c.PrincipalId -and $principals.ContainsKey($c.PrincipalId)) { $p = $principals[$c.PrincipalId] }
+            $c | Add-Member -NotePropertyName PrincipalDisplayName -NotePropertyValue $(if ($p) { $p.DisplayName } else { $c.PrincipalId }) -Force
+            $c | Add-Member -NotePropertyName PrincipalCategory -NotePropertyValue $(if ($p) { $p.Category } else { $null }) -Force
+            $c | Add-Member -NotePropertyName RoleName -NotePropertyValue (& $roleNameOf $c.RoleDefinitionGuid) -Force
+            $c | Add-Member -NotePropertyName PrivilegeTier -NotePropertyValue (& $roleTierOf $c.RoleDefinitionGuid) -Force
+        }
+    }
+
+    # Key Vault access policies: name the principals and add them to each principal's data plane access.
+    $kvPolicyByPrincipal = @{}
+    foreach ($p in @($resourceSecurity.KeyVaultAccessPolicies)) {
+        $pr = $null
+        if ($p.ObjectId -and $principals.ContainsKey($p.ObjectId)) { $pr = $principals[$p.ObjectId] }
+        $p | Add-Member -NotePropertyName PrincipalDisplayName -NotePropertyValue $(if ($pr) { $pr.DisplayName } else { $p.ObjectId }) -Force
+        $p | Add-Member -NotePropertyName PrincipalCategory -NotePropertyValue $(if ($pr) { $pr.Category } else { 'LookupFailed' }) -Force
+        $p | Add-Member -NotePropertyName UserPrincipalName -NotePropertyValue $(if ($pr) { $pr.UserPrincipalName } else { $null }) -Force
+        if ($p.CanReadSecretsOrKeys -and $p.ObjectId) {
+            if (-not $kvPolicyByPrincipal.ContainsKey($p.ObjectId)) { $kvPolicyByPrincipal[$p.ObjectId] = New-Object System.Collections.ArrayList }
+            $null = $kvPolicyByPrincipal[$p.ObjectId].Add($p.VaultName)
+        }
+    }
+
     # ---- Per principal summary ---------------------------------------------------------------
     $userSummary = New-Object System.Collections.ArrayList
     $principalSubCells = @{}
 
-    foreach ($grp in @($accessRows | Where-Object { $_.PrincipalCategory -ne 'Group' } | Group-Object -Property PrincipalId)) {
-        $rows = @($grp.Group)
+    foreach ($prinId in @($principalRowsById.Keys)) {
+        $rows = @($principalRowsById[$prinId])
         $first = $rows[0]
 
         $fullSubs = @{}
@@ -1565,11 +1627,16 @@ function Get-AzureRbacReview {
         }
 
         $resourcesReachable = 0
-        foreach ($sid in @($fullSubs.Keys)) { if ($resourceCountBySub.ContainsKey($sid)) { $resourcesReachable += $resourceCountBySub[$sid] } }
+        $countsComplete = $true
+        foreach ($sid in @($fullSubs.Keys)) {
+            if ($resourceCountBySub.ContainsKey($sid)) { $resourcesReachable += $resourceCountBySub[$sid] }
+            elseif (-not ($subResourcesVisible.ContainsKey($sid) -and $subResourcesVisible[$sid])) { $countsComplete = $false }
+        }
         foreach ($k in @($partialRg.Keys)) {
             $sid = $k.Split('|')[0]
             if ($fullSubs.ContainsKey($sid)) { continue }
             if ($resourceCountByRg.ContainsKey($k)) { $resourcesReachable += $resourceCountByRg[$k] }
+            elseif (-not ($subResourcesVisible.ContainsKey($sid) -and $subResourcesVisible[$sid])) { $countsComplete = $false }
         }
         foreach ($k in @($partialRes.Keys)) {
             $r = $partialRes[$k]
@@ -1578,7 +1645,6 @@ function Get-AzureRbacReview {
             $resourcesReachable += 1
         }
 
-        $reachedSubIds = @($cells.Keys)
         $highest = @($rows | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true } | Select-Object -First 1)[0].PrivilegeTier
         $privRows = @($rows | Where-Object { (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })
         $criticalAccess = @($rows | Where-Object { $_.PrivilegeTier -eq 'Critical' } | ForEach-Object {
@@ -1587,6 +1653,34 @@ function Get-AzureRbacReview {
         } | Select-Object -Unique)
         $criticalText = (@($criticalAccess | Select-Object -First 10) -join '; ')
         if ($criticalAccess.Count -gt 10) { $criticalText += "; +$($criticalAccess.Count - 10) more" }
+
+        $lastSignIn = $null
+        $onPremSynced = $null
+        $createdDate = $null
+        $signInKnown = $false
+        if ($signIn) {
+            if ($first.PrincipalCategory -in $userCategories -and $signIn.Users.ContainsKey($prinId)) {
+                $u = $signIn.Users[$prinId]
+                $lastSignIn = $u.LastSignIn
+                $onPremSynced = $u.OnPremisesSyncEnabled
+                $createdDate = $u.CreatedDateTime
+                $signInKnown = [bool]$u.SignInDataAvailable
+            }
+            elseif ($first.PrincipalCategory -in $workloadCategories) {
+                $appId = $null
+                if ($workloads.ContainsKey($prinId)) { $appId = $workloads[$prinId].AppId } elseif ($memberAppIds.ContainsKey($prinId)) { $appId = $memberAppIds[$prinId] }
+                if ($appId -and $signIn.ServicePrincipals.ContainsKey(([string]$appId).ToLowerInvariant())) { $lastSignIn = $signIn.ServicePrincipals[([string]$appId).ToLowerInvariant()] }
+                $signInKnown = [bool]$signIn.ServicePrincipalSignInAvailable
+            }
+        }
+        $daysSinceSignIn = if ($lastSignIn) { [int]($nowUtc - $lastSignIn).TotalDays } else { $null }
+        $isoDate = { param($d) if ($d -is [datetime]) { $d.ToString('yyyy-MM-dd HH:mm') } else { $d } }
+
+        $act = $null
+        if ($activityByPrincipal.ContainsKey($prinId)) { $act = $activityByPrincipal[$prinId] }
+
+        $miHost = $null
+        if ($miHosts.ContainsKey($prinId)) { $miHost = (@($miHosts[$prinId] | ForEach-Object { "$($_.HostResource) [$($_.Kind)]" } | Select-Object -Unique) -join '; ') }
 
         $null = $userSummary.Add([pscustomobject]@{
             DisplayName             = $first.DisplayName
@@ -1602,14 +1696,24 @@ function Get-AzureRbacReview {
             DirectPaths             = @($rows | Where-Object { $_.AccessPath -eq 'Direct' }).Count
             GroupPaths              = @($rows | Where-Object { $_.AccessPath -eq 'Group' }).Count
             ViaGroups               = (@($rows | Where-Object { $_.ViaGroupName } | Select-Object -ExpandProperty ViaGroupName -Unique) -join '; ')
-            SubscriptionsReachable  = $reachedSubIds.Count
+            SubscriptionsReachable  = $cells.Count
             SubscriptionsFull       = $fullSubs.Count
             ResourcesReachable      = $resourcesReachable
+            ResourceCountComplete   = $countsComplete
+            LastSignIn              = & $isoDate $lastSignIn
+            DaysSinceSignIn         = $daysSinceSignIn
+            SignInDataAvailable     = $signInKnown
+            OnPremisesSynced        = $onPremSynced
+            CreatedDateTime         = & $isoDate $createdDate
+            AzureChangeEvents       = if ($act) { $act.Events } elseif ($activity) { 0 } else { $null }
+            LastAzureChange         = if ($act) { & $isoDate $act.LastChange } else { $null }
+            KeyVaultPolicyAccess    = if ($kvPolicyByPrincipal.ContainsKey($prinId)) { (@($kvPolicyByPrincipal[$prinId] | Select-Object -Unique) -join '; ') } else { $null }
+            ManagedIdentityHost     = $miHost
             CriticalAccess          = $criticalText
-            PrincipalId             = $grp.Name
+            PrincipalId             = $prinId
         })
 
-        $principalSubCells[$grp.Name] = $cells
+        $principalSubCells[$prinId] = $cells
     }
 
     # ---- Access matrix: principals x subscriptions ------------------------------------------
@@ -1647,21 +1751,25 @@ function Get-AzureRbacReview {
 
     # ---- Subscription summary ----------------------------------------------------------------
     $subscriptionSummary = New-Object System.Collections.ArrayList
+    $subscriptionDetail = @{}
     foreach ($sid in $orderedSubIds) {
         $effective = @()
         if ($rowsBySub.ContainsKey($sid)) { $effective = @($rowsBySub[$sid]) }
         $atOrAbove = @($effective | Where-Object { $_.ScopeLevel -in @('Root', 'ManagementGroup', 'Subscription') })
-        $owners = @($atOrAbove | Where-Object { $_.PrivilegeTier -eq 'Critical' -and $_.PrincipalCategory -in @('Member', 'Guest') })
+        $owners = @($atOrAbove | Where-Object { $_.PrivilegeTier -eq 'Critical' -and $_.PrincipalCategory -in $userCategories })
         $standingOwners = @($owners | Where-Object { $_.IsStanding } | Select-Object -ExpandProperty PrincipalId -Unique)
         $eligibleOwners = @($owners | Where-Object { $_.EffectiveState -eq 'Eligible' } | Select-Object -ExpandProperty PrincipalId -Unique)
         $allOwners = @($owners | Select-Object -ExpandProperty PrincipalId -Unique)
-        $pimEligible = @($normalised | Where-Object { $_.SubscriptionId -eq $sid -and $_.AssignmentState -eq 'Eligible' }).Count
+        # Eligibility inherited from management groups counts: PIM done at MG level is still PIM.
+        $pimEligible = @($effective | Where-Object { $_.EffectiveState -eq 'Eligible' }).Count
         $guests = @($effective | Where-Object { $_.PrincipalCategory -eq 'Guest' } | Select-Object -ExpandProperty PrincipalId -Unique)
+        $workloadPriv = @($atOrAbove | Where-Object { $_.PrincipalCategory -in $workloadCategories -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 } | Select-Object -ExpandProperty PrincipalId -Unique)
+        $lhCount = @($lighthouse | Where-Object { $_.SubscriptionId -eq $sid }).Count
 
         $risk = 'Low'
         if ($standingOwners.Count -gt $MaxOwnersPerSubscription) { $risk = 'High' }
         elseif ($standingOwners.Count -gt 0 -and $pimEligible -eq 0) { $risk = 'Medium' }
-        elseif ($guests.Count -gt 0) { $risk = 'Medium' }
+        elseif ($guests.Count -gt 0 -or $workloadPriv.Count -gt 0) { $risk = 'Medium' }
 
         $null = $subscriptionSummary.Add([pscustomobject]@{
             SubscriptionName       = $subNames[$sid]
@@ -1669,17 +1777,98 @@ function Get-AzureRbacReview {
             State                  = $subStates[$sid]
             ManagementGroupPath    = if ($subMgPath.ContainsKey($sid)) { $subMgPath[$sid] } else { $null }
             ResourceGroups         = if ($rgCountBySub.ContainsKey($sid)) { $rgCountBySub[$sid] } else { $null }
-            Resources              = if ($resourceCountBySub.ContainsKey($sid)) { $resourceCountBySub[$sid] } else { 0 }
+            Resources              = if ($resourceCountBySub.ContainsKey($sid)) { [string]$resourceCountBySub[$sid] } elseif ($rgCountBySub.ContainsKey($sid) -and $rgCountBySub[$sid] -gt 0) { 'Not visible' } else { '0' }
             AssignmentsAtOrBelow   = @($normalised | Where-Object { $_.SubscriptionId -eq $sid }).Count
             EffectivePrincipals    = @($effective | Select-Object -ExpandProperty PrincipalId -Unique).Count
             EffectiveOwners        = $allOwners.Count
             StandingOwners         = $standingOwners.Count
             EligibleOwners         = $eligibleOwners.Count
             GuestsWithAccess       = $guests.Count
-            PimEligibleAssignments = $pimEligible
+            PrivilegedWorkloads    = $workloadPriv.Count
+            LighthouseAuthorizations = $lhCount
+            PimEligiblePaths       = $pimEligible
             RiskRating             = $risk
         })
+
+        # Per subscription privileged principal list for the report.
+        $subscriptionDetail[$sid] = @(
+            $atOrAbove |
+            Where-Object { (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 } |
+            Group-Object -Property PrincipalId |
+            ForEach-Object {
+                $g = @($_.Group)
+                $top = @($g | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true })[0]
+                [pscustomobject]@{
+                    DisplayName       = $top.DisplayName
+                    UserPrincipalName = $top.UserPrincipalName
+                    PrincipalCategory = $top.PrincipalCategory
+                    HighestTier       = $top.PrivilegeTier
+                    Roles             = (@($g | ForEach-Object {
+                        $via = if ($_.AccessPath -eq 'Group') { " via $($_.ViaGroupName)" } else { '' }
+                        $from = if ($_.ScopeLevel -ne 'Subscription') { " from $($_.ScopeName)" } else { '' }
+                        $st = if ($_.EffectiveState -eq 'Eligible') { ' [Eligible]' } else { '' }
+                        "$($_.RoleName)$st$from$via"
+                    } | Select-Object -Unique) -join '; ')
+                    Standing          = (@($g | Where-Object { $_.IsStanding }).Count -gt 0)
+                }
+            } |
+            Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, DisplayName
+        )
     }
+
+    # ---- Group summary ----------------------------------------------------------------------
+    $groupSummary = @(
+        foreach ($gid in $groupIds) {
+            $ga = @($normalised | Where-Object { $_.PrincipalId -eq $gid })
+            $top = @($ga | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true })[0]
+            $exp = $groupExpansion[$gid]
+            $members = @($exp.Members)
+            [pscustomobject]@{
+                GroupName          = $principals[$gid].DisplayName
+                HighestTier        = $top.PrivilegeTier
+                Roles              = (@($ga | ForEach-Object { $st = if ($_.AssignmentState -eq 'Eligible') { ' [Eligible]' } else { '' }; "$($_.RoleName)$st @ $($_.ScopeName)" } | Select-Object -Unique) -join '; ')
+                Members            = @($members | Select-Object -ExpandProperty MemberId -Unique).Count
+                GuestMembers       = @($members | Where-Object { $_.Category -eq 'Guest' } | Select-Object -ExpandProperty MemberId -Unique).Count
+                WorkloadMembers    = @($members | Where-Object { $_.Category -in @('ServicePrincipal', 'ManagedIdentity', 'MicrosoftPlatform') } | Select-Object -ExpandProperty MemberId -Unique).Count
+                EligibleMembers    = @($members | Where-Object { $_.MembershipType -like 'Eligible*' } | Select-Object -ExpandProperty MemberId -Unique).Count
+                Owners             = (@($exp.Owners | ForEach-Object { if ($_.OwnerUserPrincipalName) { $_.OwnerUserPrincipalName } else { $_.OwnerDisplayName } }) -join '; ')
+                IsAssignableToRole = $principals[$gid].IsAssignableToRole
+                MembershipReadable = -not [bool]$exp.ExpansionFailed
+                GroupId            = $gid
+            }
+        }
+    )
+    $groupSummary = @($groupSummary | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, @{ Expression = 'Members'; Descending = $true })
+
+    # ---- Workload identity summary ----------------------------------------------------------
+    $workloadSummary = @(
+        $userSummary | Where-Object { $_.PrincipalCategory -in @('ServicePrincipal', 'ManagedIdentity', 'ExternalApp', 'MicrosoftPlatform') } | ForEach-Object {
+            $w = $null
+            if ($workloads.ContainsKey($_.PrincipalId)) { $w = $workloads[$_.PrincipalId] }
+            [pscustomobject]@{
+                DisplayName          = $_.DisplayName
+                PrincipalCategory    = $_.PrincipalCategory
+                Publisher            = if ($w) { $w.Publisher } elseif ($_.PrincipalCategory -eq 'MicrosoftPlatform') { 'Microsoft' } else { $null }
+                HighestTier          = $_.HighestTier
+                SubscriptionsReachable = $_.SubscriptionsReachable
+                CriticalAccess       = $_.CriticalAccess
+                LastSignIn           = $_.LastSignIn
+                DaysSinceSignIn      = $_.DaysSinceSignIn
+                AzureChangeEvents    = $_.AzureChangeEvents
+                ActiveSecrets        = if ($w) { $w.ActiveSecrets } else { $null }
+                ActiveCertificates   = if ($w) { $w.ActiveCertificates } else { $null }
+                FederatedCredentials = if ($w) { $w.FederatedCredentials } else { $null }
+                LongLivedCredentials = if ($w) { $w.LongLivedCredentials } else { $null }
+                LongestLifetimeDays  = if ($w) { $w.LongestLifetimeDays } else { $null }
+                ExpiredCredentials   = if ($w) { $w.ExpiredCredentials } else { $null }
+                NextExpiry           = if ($w -and $w.NextExpiry) { $w.NextExpiry.ToString('yyyy-MM-dd') } else { $null }
+                Owners               = if ($w) { $w.Owners } else { $null }
+                ManagedIdentityHost  = $_.ManagedIdentityHost
+                AppId                = if ($w) { $w.AppId } else { $null }
+                PrincipalId          = $_.PrincipalId
+            }
+        } | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, DisplayName
+    )
 
     # ---- Custom roles -----------------------------------------------------------------------
     $customRoles = @(
@@ -1700,6 +1889,14 @@ function Get-AzureRbacReview {
         Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true }, @{ Expression = 'AssignmentCount'; Descending = $true }
     )
 
+    # ---- Lighthouse rows with role names ------------------------------------------------------
+    foreach ($l in $lighthouse) {
+        $l | Add-Member -NotePropertyName RoleName -NotePropertyValue (& $roleNameOf $l.RoleDefinitionGuid) -Force
+        $l | Add-Member -NotePropertyName PrivilegeTier -NotePropertyValue (& $roleTierOf $l.RoleDefinitionGuid) -Force
+        $delegated = @(([string]$l.DelegatedRoleDefinitionIds).Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { & $roleNameOf $_ })
+        $l | Add-Member -NotePropertyName CanAssignRoles -NotePropertyValue ($delegated -join '; ') -Force
+    }
+
     # ---- Findings ---------------------------------------------------------------------------
     $findings = New-Object System.Collections.ArrayList
     $addFinding = {
@@ -1715,18 +1912,32 @@ function Get-AzureRbacReview {
             Scope          = $Scope
         })
     }
-
-    foreach ($a in @($normalised | Where-Object { $_.ScopeLevel -eq 'Root' })) {
-        & $addFinding 'Critical' 'RootScopeAssignment' $a.PrincipalDisplayName $a.RoleName $a.ScopeName "$($a.AssignmentState) $($a.AssignmentType) assignment at tenant root (/), reaching every management group, subscription and resource." 'Remove role assignments at root scope. These are usually left behind after Elevate Access by a Global Administrator. Use the Tenant Root Group management group with PIM instead.' $a.Scope
+    $describeRows = {
+        param($Rows, $Max)
+        $items = @($Rows | ForEach-Object {
+            $via = if ($_.AccessPath -eq 'Group') { " via group $($_.ViaGroupName)" } else { ' (direct)' }
+            "$($_.RoleName) @ $($_.ScopeName)$via"
+        } | Select-Object -Unique)
+        $text = (@($items | Select-Object -First $Max) -join '; ')
+        if ($items.Count -gt $Max) { $text += "; +$($items.Count - $Max) more" }
+        return $text
     }
 
-    foreach ($r in @($accessRows | Where-Object { $_.IsStanding -and $_.PrincipalCategory -in @('Member', 'Guest') -and $_.ScopeLevel -in @('Root', 'ManagementGroup', 'Subscription') })) {
-        $via = if ($r.AccessPath -eq 'Group') { " via group $($r.ViaGroupName)" } else { ' (direct)' }
-        if ($r.PrivilegeTier -eq 'Critical') {
-            & $addFinding 'High' 'StandingCriticalAccess' $r.DisplayName $r.RoleName $r.ScopeName "Permanent active $($r.RoleName) at $($r.ScopeLevel) scope$via. Can grant any access in $($r.ResourcesInScope) resources." 'Convert to a PIM-eligible assignment with approval and MFA on activation, or remove.' $r.Scope
+    foreach ($a in @($normalised | Where-Object { $_.ScopeLevel -eq 'Root' })) {
+        $rating = if ($a.PrincipalCategory -eq 'MicrosoftPlatform') { 'Low' } else { 'Critical' }
+        & $addFinding $rating 'RootScopeAssignment' $a.PrincipalDisplayName $a.RoleName $a.ScopeName "$($a.AssignmentState) $($a.AssignmentType) assignment at tenant root (/), reaching every management group, subscription and resource." 'Remove role assignments at root scope. These are usually left behind after Elevate Access by a Global Administrator. Use the Tenant Root Group management group with PIM instead.' $a.Scope
+    }
+
+    # Standing privileged access: one finding per person, listing every place it applies.
+    foreach ($grp in @($accessRows | Where-Object { $_.IsStanding -and $_.PrincipalCategory -in $userCategories -and $_.ScopeLevel -in @('Root', 'ManagementGroup', 'Subscription') -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 } | Group-Object -Property PrincipalId)) {
+        $rows = @($grp.Group)
+        $crit = @($rows | Where-Object { $_.PrivilegeTier -eq 'Critical' })
+        $first = $rows[0]
+        if ($crit.Count -gt 0) {
+            & $addFinding 'High' 'StandingCriticalAccess' $first.DisplayName (@($crit | Select-Object -ExpandProperty RoleName -Unique) -join ', ') (@($crit | Select-Object -ExpandProperty ScopeName -Unique) -join ', ') "Permanent active access that can grant any access: $(& $describeRows $crit 12)" 'Remove, or convert to PIM-eligible with approval and MFA on activation. Keep standing Owner / User Access Administrator to break-glass accounts only.' $crit[0].Scope
         }
-        elseif ($r.PrivilegeTier -eq 'High') {
-            & $addFinding 'Medium' 'StandingHighAccess' $r.DisplayName $r.RoleName $r.ScopeName "Permanent active $($r.RoleName) at $($r.ScopeLevel) scope$via." 'Convert to a PIM-eligible assignment, or reduce scope to the resource groups actually needed.' $r.Scope
+        else {
+            & $addFinding 'Medium' 'StandingHighAccess' $first.DisplayName (@($rows | Select-Object -ExpandProperty RoleName -Unique) -join ', ') (@($rows | Select-Object -ExpandProperty ScopeName -Unique) -join ', ') "Permanent active write access at subscription scope or above: $(& $describeRows $rows 12)" 'Reduce scope to the resource groups actually needed, or make the assignment PIM-eligible.' $rows[0].Scope
         }
     }
 
@@ -1734,31 +1945,38 @@ function Get-AzureRbacReview {
         $rows = @($grp.Group)
         $top = @($rows | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true })[0]
         $rating = if ((Get-AzRbacTierRank -Tier $top.PrivilegeTier) -ge 3) { 'High' } else { 'Medium' }
-        $roles = (@($rows | ForEach-Object { "$($_.RoleName) @ $($_.ScopeName)" } | Select-Object -Unique | Select-Object -First 8) -join '; ')
-        & $addFinding $rating 'GuestAzureAccess' $top.DisplayName $top.RoleName $top.ScopeName "Guest account holds $($rows.Count) Azure access path(s): $roles" 'Confirm a current business need and sponsor, place under an access review, and prefer eligible over active assignments.' $top.Scope
+        & $addFinding $rating 'GuestAzureAccess' $top.DisplayName $top.RoleName $top.ScopeName "Guest account holds $($rows.Count) Azure access path(s): $(& $describeRows $rows 8)" 'Confirm a current business need and sponsor, place under an access review, and prefer eligible over active assignments.' $top.Scope
     }
 
-    foreach ($a in @($normalised | Where-Object { -not $_.PrincipalResolved })) {
-        & $addFinding 'Medium' 'OrphanedAssignment' $a.PrincipalId $a.RoleName $a.ScopeName "Assignment ($($a.AssignmentState)) to a principal that no longer exists or cannot be read. ARM principal type: $($a.ArmPrincipalType)." 'Delete the orphaned assignment. If the identity was deleted, the assignment can be silently reused if the object is restored.' $a.Scope
+    foreach ($a in @($normalised | Where-Object { $_.PrincipalCategory -eq 'Deleted' })) {
+        & $addFinding 'Medium' 'OrphanedAssignment' $a.PrincipalId $a.RoleName $a.ScopeName "Assignment ($($a.AssignmentState)) to a $($a.ArmPrincipalType) that no longer exists in the directory." 'Delete the orphaned assignment so it cannot be inherited if the object is restored.' $a.Scope
+    }
+    $lookupFailed = @($normalised | Where-Object { $_.PrincipalCategory -eq 'LookupFailed' })
+    if ($lookupFailed.Count -gt 0) {
+        & $addFinding 'Low' 'PrincipalLookupFailed' "$(@($lookupFailed | Select-Object -ExpandProperty PrincipalId -Unique).Count) principals" 'Various' 'Various' 'These principals could not be looked up in Microsoft Graph, so they are neither confirmed as live nor as deleted. Their access is listed by object ID.' 'Check the review account has Directory.Read.All and re-run.' $null
+    }
+    foreach ($a in @($normalised | Where-Object { $_.PrincipalCategory -eq 'ForeignPrincipal' })) {
+        & $addFinding 'Medium' 'ForeignPrincipalAccess' $a.PrincipalId $a.RoleName $a.ScopeName "Assignment to a principal from another tenant ($($a.ArmPrincipalType))." 'Confirm which external organisation this is and whether access is still required.' $a.Scope
     }
 
-    foreach ($grp in @($accessRows | Where-Object { $_.PrincipalCategory -in @('Member', 'Guest') -and $_.AccountEnabled -eq $false } | Group-Object -Property PrincipalId)) {
+    foreach ($grp in @($accessRows | Where-Object { $_.PrincipalCategory -in $userCategories -and $_.AccountEnabled -eq $false } | Group-Object -Property PrincipalId)) {
         $first = $grp.Group[0]
-        & $addFinding 'Medium' 'DisabledAccountWithAccess' $first.DisplayName $first.RoleName $first.ScopeName "Disabled account still holds $($grp.Count) Azure access path(s)." 'Remove Azure role assignments and group memberships as part of leaver processing.' $first.Scope
+        & $addFinding 'Medium' 'DisabledAccountWithAccess' $first.DisplayName $first.RoleName $first.ScopeName "Disabled account still holds $($grp.Count) Azure access path(s): $(& $describeRows @($grp.Group) 6)" 'Remove Azure role assignments and group memberships as part of leaver processing.' $first.Scope
     }
 
-    foreach ($r in @($accessRows | Where-Object { $_.PrincipalCategory -in @('ServicePrincipal', 'ManagedIdentity') -and $_.EffectiveState -eq 'Active' -and $_.ScopeLevel -in @('Root', 'ManagementGroup', 'Subscription') -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })) {
-        $rating = if ($r.PrivilegeTier -eq 'Critical' -or $r.ScopeLevel -ne 'Subscription') { 'High' } else { 'Medium' }
-        & $addFinding $rating 'WorkloadIdentityBroadAccess' $r.DisplayName $r.RoleName $r.ScopeName "$($r.PrincipalCategory) holds $($r.RoleName) at $($r.ScopeLevel) scope." 'Scope workload identities to the resource groups they deploy to. Avoid Owner or User Access Administrator for automation; use a constrained Role Based Access Control Administrator condition if role assignment is required.' $r.Scope
+    foreach ($grp in @($accessRows | Where-Object { $_.PrincipalCategory -in $workloadCategories -and $_.EffectiveState -eq 'Active' -and $_.ScopeLevel -in @('Root', 'ManagementGroup', 'Subscription') -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 } | Group-Object -Property PrincipalId)) {
+        $rows = @($grp.Group)
+        $first = $rows[0]
+        $broad = @($rows | Where-Object { $_.PrivilegeTier -eq 'Critical' -or $_.ScopeLevel -ne 'Subscription' })
+        $rating = if ($broad.Count -gt 0) { 'High' } else { 'Medium' }
+        & $addFinding $rating 'WorkloadIdentityBroadAccess' $first.DisplayName (@($rows | Select-Object -ExpandProperty RoleName -Unique) -join ', ') (@($rows | Select-Object -ExpandProperty ScopeName -Unique) -join ', ') "$($first.PrincipalCategory) holds: $(& $describeRows $rows 10)" 'Scope workload identities to the resource groups they deploy to. Avoid Owner or User Access Administrator for automation; use Role Based Access Control Administrator with a condition if it must assign roles.' $first.Scope
     }
 
-    $directSeen = @{}
-    foreach ($a in @($normalised | Where-Object { $_.PrincipalCategory -in @('Member', 'Guest') -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })) {
-        # An eligible assignment and its PIM activation are the same grant; report it once.
-        $directKey = "$($a.PrincipalId)|$($a.RoleDefinitionGuid)|$($a.Scope)".ToLowerInvariant()
-        if ($directSeen.ContainsKey($directKey)) { continue }
-        $directSeen[$directKey] = $true
-        & $addFinding 'Low' 'DirectUserAssignment' $a.PrincipalDisplayName $a.RoleName $a.ScopeName "$($a.RoleName) assigned directly to the user ($($a.AssignmentState))." 'Assign privileged Azure roles to role-assignable groups (or PIM for Groups) so membership is reviewed in one place.' $a.Scope
+    foreach ($grp in @($normalised | Where-Object { $_.PrincipalCategory -in $userCategories -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 } | Group-Object -Property PrincipalId)) {
+        $rows = @($grp.Group)
+        $unique = @($rows | Group-Object -Property RoleDefinitionGuid, Scope | ForEach-Object { $_.Group[0] })
+        $items = (@($unique | ForEach-Object { "$($_.RoleName) @ $($_.ScopeName)" } | Select-Object -First 10) -join '; ')
+        & $addFinding 'Low' 'DirectUserAssignment' $rows[0].PrincipalDisplayName (@($unique | Select-Object -ExpandProperty RoleName -Unique) -join ', ') (@($unique | Select-Object -ExpandProperty ScopeName -Unique) -join ', ') "Privileged roles assigned directly to the user rather than a group: $items" 'Assign privileged Azure roles to role-assignable groups (or PIM for Groups) so membership is reviewed in one place.' $unique[0].Scope
     }
 
     foreach ($a in @($normalised | Where-Object { $_.AssignmentState -eq 'Eligible' -and $_.AssignmentType -eq 'Eligible (permanent)' -and $_.PrivilegeTier -eq 'Critical' })) {
@@ -1766,69 +1984,165 @@ function Get-AzureRbacReview {
     }
 
     foreach ($cr in @($customRoles | Where-Object { $_.AssignmentCount -gt 0 -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })) {
-        & $addFinding 'High' 'PrivilegedCustomRole' $cr.RoleName $cr.RoleName $cr.AssignableScopes "Custom role is $($cr.PrivilegeTier) tier: $($cr.TierReason) Wildcards: $($cr.WildcardActions)" 'Replace wildcard actions with the specific operations needed, or use the equivalent built-in role so the privilege is obvious to reviewers.' $null
+        & $addFinding 'High' 'PrivilegedCustomRole' $cr.RoleName $cr.RoleName $cr.AssignableScopes "Custom role is $($cr.PrivilegeTier) tier: $($cr.TierReason) Wildcards: $($cr.WildcardActions)" 'Replace wildcard actions with the specific operations needed, or use the equivalent built-in role so the privilege is obvious to reviewers. A role named Reader that can assign roles is especially misleading.' $null
     }
 
-    foreach ($s in @($subscriptionSummary)) {
-        if ($s.StandingOwners -gt $MaxOwnersPerSubscription) {
-            & $addFinding 'Medium' 'ExcessiveSubscriptionOwners' $s.SubscriptionName 'Critical-tier roles' $s.SubscriptionName "$($s.StandingOwners) users hold standing Critical-tier access (target: <= $MaxOwnersPerSubscription)." 'Reduce standing owners; keep the rest as PIM-eligible.' "/subscriptions/$($s.SubscriptionId)"
+    $subsWithoutPim = @($subscriptionSummary | Where-Object { $_.StandingOwners -gt 0 -and $_.PimEligiblePaths -eq 0 })
+    if ($subsWithoutPim.Count -gt 0) {
+        & $addFinding 'Medium' 'NoPimInSubscription' "$($subsWithoutPim.Count) subscription(s)" 'Critical-tier roles' (@($subsWithoutPim | Select-Object -ExpandProperty SubscriptionName) -join ', ') 'Privileged access exists but nothing is PIM-eligible at, above or below these subscriptions, so all privileged access is standing.' 'Onboard to PIM for Azure resources (ideally at management group level) and move Owner, User Access Administrator and Contributor to eligible.' $null
+    }
+    foreach ($s in @($subscriptionSummary | Where-Object { $_.StandingOwners -gt $MaxOwnersPerSubscription })) {
+        & $addFinding 'Medium' 'ExcessiveSubscriptionOwners' $s.SubscriptionName 'Critical-tier roles' $s.SubscriptionName "$($s.StandingOwners) users hold standing Critical-tier access (target: <= $MaxOwnersPerSubscription)." 'Reduce standing owners; keep the rest as PIM-eligible.' "/subscriptions/$($s.SubscriptionId)"
+    }
+
+    foreach ($g in $groupSummary) {
+        if ((Get-AzRbacTierRank -Tier $g.HighestTier) -lt 3) { continue }
+        if (-not $g.MembershipReadable) {
+            & $addFinding 'Medium' 'GroupMembershipUnreadable' $g.GroupName $g.HighestTier $null "Group holds $($g.HighestTier)-tier Azure roles but its membership could not be read, so the users with this access are not listed." 'Check the review account can read group membership (Group.Read.All) and re-run.' $null
         }
-        if ($s.StandingOwners -gt 0 -and $s.PimEligibleAssignments -eq 0) {
-            & $addFinding 'Medium' 'NoPimInSubscription' $s.SubscriptionName 'All' $s.SubscriptionName 'Privileged access exists but no PIM-eligible assignments were found at or below this subscription.' 'Onboard the subscription to PIM for Azure resources and move privileged roles to eligible.' "/subscriptions/$($s.SubscriptionId)"
+        if ($g.Owners) {
+            & $addFinding 'Medium' 'GroupOwnerEscalationPath' $g.GroupName $g.HighestTier $null "Group holds $($g.Roles). Owners who can add members (and so grant themselves this access): $($g.Owners)" 'Remove group owners, or make sure every owner is already entitled to the access the group grants. Use PIM for Groups for privileged access groups.' $null
+        }
+        if ($g.IsAssignableToRole -ne $true) {
+            & $addFinding 'Medium' 'NonRoleAssignableGroup' $g.GroupName $g.HighestTier $null "Group holds $($g.Roles) but is not role-assignable, so Groups Administrators, User Administrators and other Entra roles can change its membership." 'Use a role-assignable group (isAssignableToRole) for privileged Azure access so only Privileged Role Administrators can manage membership.' $null
+        }
+        if ($g.GuestMembers -gt 0) {
+            & $addFinding 'High' 'GuestInPrivilegedGroup' $g.GroupName $g.HighestTier $null "$($g.GuestMembers) guest(s) are members of a group holding $($g.Roles)." 'Remove guests from privileged groups or give them separate, scoped and reviewed access.' $null
         }
     }
 
-    foreach ($gid in $groupIds) {
-        $groupAssignments = @($normalised | Where-Object { $_.PrincipalId -eq $gid })
-        $top = @($groupAssignments | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.PrivilegeTier }; Descending = $true })[0]
-        if ((Get-AzRbacTierRank -Tier $top.PrivilegeTier) -lt 3) { continue }
-
-        if ($groupExpansion[$gid].ExpansionFailed) {
-            & $addFinding 'Medium' 'GroupMembershipUnreadable' $top.PrincipalDisplayName $top.RoleName $top.ScopeName "Group holds $($top.RoleName) but its membership could not be read, so the users with this access are not listed in this report." 'Check the review account can read group membership (Group.Read.All) and re-run.' $top.Scope
+    # Sign-in based findings.
+    foreach ($u in @($userSummary | Where-Object { $_.PrincipalCategory -in $userCategories -and (Get-AzRbacTierRank -Tier $_.HighestTier) -ge 3 })) {
+        if ($u.SignInDataAvailable -and $u.AccountEnabled -ne $false) {
+            $created = Get-AzRbacDateValue -Value $u.CreatedDateTime
+            $oldEnough = (-not $created) -or (($nowUtc - $created).TotalDays -gt $DormantDays)
+            if (($null -eq $u.LastSignIn -and $oldEnough) -or ($u.DaysSinceSignIn -gt $DormantDays)) {
+                $since = if ($u.LastSignIn) { "$($u.DaysSinceSignIn) days ago" } else { 'never (or before sign-in logging)' }
+                $rating = if ($u.HighestTier -eq 'Critical' -and $u.StandingPrivilegedCount -gt 0) { 'High' } else { 'Medium' }
+                & $addFinding $rating 'DormantPrivilegedAccount' $u.DisplayName $u.HighestTier $null "Last sign-in $since but holds $($u.HighestTier)-tier Azure access ($($u.CriticalAccess))." "Disable or remove access for accounts unused for more than $DormantDays days." $null
+            }
         }
-
-        $owners = @($groupExpansion[$gid].Owners)
-        if ($owners.Count -gt 0) {
-            $ownerNames = (@($owners | ForEach-Object { if ($_.OwnerUserPrincipalName) { $_.OwnerUserPrincipalName } else { $_.OwnerDisplayName } }) -join '; ')
-            & $addFinding 'Medium' 'GroupOwnerEscalationPath' $top.PrincipalDisplayName $top.RoleName $top.ScopeName "Group holds $($top.RoleName) and has $($owners.Count) owner(s) who can add members: $ownerNames" 'Remove group owners, or make sure every owner is already entitled to the access the group grants. Use PIM for Groups for privileged access groups.' $top.Scope
+        if ($u.OnPremisesSynced -eq $true -and $u.HighestTier -eq 'Critical') {
+            & $addFinding 'Medium' 'SyncedPrivilegedAccount' $u.DisplayName $u.HighestTier $null 'Account is synchronised from on-premises Active Directory and can manage Azure role assignments. A compromise of on-premises AD gives control of Azure.' 'Use cloud-only administrative accounts for privileged Azure access.' $null
         }
+        if ($activity -and $u.StandingPrivilegedCount -gt 0 -and $u.AzureChangeEvents -eq 0 -and $u.AccountEnabled -ne $false) {
+            & $addFinding 'Low' 'UnusedStandingAccess' $u.DisplayName $u.HighestTier $null "Holds standing $($u.HighestTier)-tier access but made no changes in Azure in the last $($activity.Days) days." 'Reduce to Reader or make the access PIM-eligible; standing write access that is not used is pure risk.' $null
+        }
+    }
 
-        if ($principals[$gid].IsAssignableToRole -eq $false) {
-            & $addFinding 'Medium' 'NonRoleAssignableGroup' $top.PrincipalDisplayName $top.RoleName $top.ScopeName "Group holding $($top.RoleName) is not role-assignable, so Groups Administrators, User Administrators and other Entra roles can change its membership." 'Use a role-assignable group (isAssignableToRole) for privileged Azure access so only Privileged Role Administrators can manage membership.' $top.Scope
+    # Workload identity findings.
+    foreach ($w in @($workloadSummary | Where-Object { $_.PrincipalCategory -ne 'MicrosoftPlatform' })) {
+        $privileged = (Get-AzRbacTierRank -Tier $w.HighestTier) -ge 3
+        if ($w.PrincipalCategory -eq 'ExternalApp') {
+            $rating = if ($privileged) { 'High' } else { 'Medium' }
+            & $addFinding $rating 'ThirdPartyAppAzureAccess' $w.DisplayName $w.HighestTier $null "Application published by another organisation ($($w.Publisher)) holds Azure access. Its credentials are managed outside this tenant." 'Confirm the vendor relationship and scope its access to the minimum resources.' $null
+        }
+        if (-not $privileged) { continue }
+        if ($w.Owners) {
+            $rating = if ($w.HighestTier -eq 'Critical') { 'High' } else { 'Medium' }
+            & $addFinding $rating 'AppOwnerEscalationPath' $w.DisplayName $w.HighestTier $null "Owners can add credentials to this identity and act with its Azure access: $($w.Owners)" 'Remove owners from privileged application registrations and enterprise apps; manage them through a controlled pipeline.' $null
+        }
+        if ($w.LongLivedCredentials -gt 0) {
+            & $addFinding 'Medium' 'LongLivedCredential' $w.DisplayName $w.HighestTier $null "$($w.LongLivedCredentials) credential(s) valid for more than 400 days (longest $($w.LongestLifetimeDays) days)." 'Use federated credentials (workload identity federation) or a managed identity; otherwise rotate secrets at least every 6-12 months.' $null
+        }
+        elseif ($w.ActiveSecrets -gt 0 -and $w.ActiveCertificates -eq 0 -and $w.FederatedCredentials -eq 0) {
+            & $addFinding 'Low' 'SecretOnlyCredential' $w.DisplayName $w.HighestTier $null "Authenticates with client secrets only ($($w.ActiveSecrets) active)." 'Prefer federated credentials or certificates over client secrets.' $null
+        }
+        if ($w.PrincipalCategory -in @('ServicePrincipal', 'ExternalApp') -and $null -ne $w.DaysSinceSignIn -and $w.DaysSinceSignIn -gt $DormantDays) {
+            & $addFinding 'Medium' 'DormantWorkloadIdentity' $w.DisplayName $w.HighestTier $null "No sign-in for $($w.DaysSinceSignIn) days but still holds $($w.HighestTier)-tier Azure access." 'Remove the role assignments (and the credentials) if the identity is no longer used.' $null
+        }
+        if ($w.PrincipalCategory -eq 'ManagedIdentity' -and $w.ManagedIdentityHost) {
+            $hostIsCompute = $w.ManagedIdentityHost -match 'virtualmachines|microsoft\.web/sites|automationaccounts|logic/workflows|containerinstance|containerapps|managedclusters|batchaccounts|databricks|datafactory|synapse|machinelearningservices'
+            $rating = if ($w.HighestTier -eq 'Critical' -and $hostIsCompute) { 'High' } else { 'Medium' }
+            & $addFinding $rating 'ManagedIdentityEscalationPath' $w.DisplayName $w.HighestTier $null "Managed identity holds $($w.HighestTier)-tier access ($($w.CriticalAccess)) and is attached to $($w.ManagedIdentityHost). Anyone who can run code on or modify that resource can act as this identity." 'Scope the identity to what the workload needs, and restrict who can change or run code on the host resource.' $null
+        }
+    }
+
+    # External tenants via Lighthouse.
+    foreach ($l in $lighthouse) {
+        $privileged = (Get-AzRbacTierRank -Tier $l.PrivilegeTier) -ge 3 -or $l.CanAssignRoles
+        $rating = if ($privileged -and $l.AuthorizationType -eq 'Permanent') { 'High' } else { 'Medium' }
+        $tenantText = if ($l.ManagedByTenant) { "$($l.ManagedByTenant) ($($l.ManagedByTenantId))" } else { $l.ManagedByTenantId }
+        $assignText = if ($l.CanAssignRoles) { " Can assign: $($l.CanAssignRoles)." } else { '' }
+        & $addFinding $rating 'LighthouseDelegation' $tenantText $l.RoleName $l.SubscriptionName "External tenant has $($l.AuthorizationType) $($l.RoleName) for '$($l.PrincipalDisplayName)' through Lighthouse offer '$($l.OfferName)'.$assignText This access does not appear in the subscription's role assignments." 'Confirm the contract still requires this access, prefer eligible (JIT) authorisations, and review the offer at least annually.' $l.Scope
+    }
+
+    # Access outside RBAC.
+    foreach ($v in @($resourceSecurity.KeyVaults | Where-Object { $_.PermissionModel -eq 'Access policies' })) {
+        & $addFinding 'Medium' 'KeyVaultAccessPolicies' $v.VaultName 'Access policy' $v.SubscriptionName "Vault uses access policies ($($v.AccessPolicyCount)), so secret and key access is not visible in Azure RBAC. Anyone with Contributor or Key Vault Contributor on it can grant themselves secret access." 'Migrate the vault to the Azure RBAC permission model.' $v.ResourceId
+    }
+    foreach ($p in @($resourceSecurity.KeyVaultAccessPolicies | Where-Object { $_.CanReadSecretsOrKeys -and $_.PrincipalCategory -in @('Guest', 'Deleted', 'ExternalApp', 'ForeignPrincipal') })) {
+        $rating = if ($p.PrincipalCategory -eq 'Deleted') { 'Low' } else { 'High' }
+        & $addFinding $rating 'KeyVaultPolicyRiskyPrincipal' $p.PrincipalDisplayName 'Access policy' $p.VaultName "$($p.PrincipalCategory) principal has secret/key access through an access policy (secrets: $($p.SecretPermissions); keys: $($p.KeyPermissions))." 'Remove the access policy entry.' $p.ResourceId
+    }
+    foreach ($k in @($resourceSecurity.AksClusters | Where-Object { -not $_.LocalAccountsDisabled })) {
+        & $addFinding 'High' 'AksLocalAccounts' $k.ClusterName 'Kubernetes cluster-admin' $k.SubscriptionName 'Local accounts are enabled, so anyone who can list cluster admin credentials gets cluster-admin without Entra ID or Azure RBAC.' 'Disable local accounts and use Entra ID with Azure RBAC for Kubernetes authorisation.' $k.ResourceId
+    }
+    foreach ($s in @($resourceSecurity.SqlServers | Where-Object { -not $_.EntraOnlyAuth })) {
+        & $addFinding 'Medium' 'SqlAuthenticationEnabled' $s.ServerName "SQL admin '$($s.SqlAdminLogin)'" $s.SubscriptionName 'SQL authentication is enabled, so database access exists outside Entra ID and is not visible in this review.' 'Enable Microsoft Entra-only authentication.' $s.ResourceId
+    }
+    $sharedKey = @($resourceSecurity.StorageAccounts | Where-Object { $_.SharedKeyAccess -ne 'Disabled' })
+    foreach ($grp in @($sharedKey | Group-Object -Property SubscriptionName)) {
+        & $addFinding 'Low' 'StorageSharedKeyAccess' "$($grp.Count) storage account(s)" 'listKeys' $grp.Name "Shared key access is enabled on: $((@($grp.Group | Select-Object -ExpandProperty AccountName | Select-Object -First 15) -join ', '))$(if ($grp.Count -gt 15) { ' ...' }). Anyone with Contributor (listKeys) gets full data access that bypasses Entra ID and RBAC data roles." 'Disable shared key access where applications use Entra ID; otherwise rotate keys and restrict who holds listKeys.' $null
+    }
+    $localAuth = @($resourceSecurity.LocalAuthResources | Where-Object { $_.LocalAuth -eq 'Enabled' })
+    foreach ($grp in @($localAuth | Group-Object -Property SubscriptionName)) {
+        & $addFinding 'Low' 'LocalAuthEnabled' "$($grp.Count) resource(s)" 'Access keys' $grp.Name "Key-based (local) authentication is enabled on: $((@($grp.Group | ForEach-Object { "$($_.ResourceName) ($($_.ResourceType))" } | Select-Object -First 12) -join ', '))$(if ($grp.Count -gt 12) { ' ...' })." 'Disable local authentication (disableLocalAuth) so access goes through Entra ID and RBAC.' $null
+    }
+
+    # Recent grants of privileged roles.
+    if ($activity) {
+        foreach ($c in @($activity.RbacChanges | Where-Object { $_.Change -eq 'Granted' -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 4 })) {
+            & $addFinding 'Low' 'RecentPrivilegedGrant' $c.PrincipalDisplayName $c.RoleName $c.SubscriptionName "$($c.RoleName) granted by $($c.ChangedBy) on $(if ($c.Timestamp -is [datetime]) { $c.Timestamp.ToString('yyyy-MM-dd') } else { $c.Timestamp }) at $($c.Scope)." 'Confirm each recent Critical-tier grant was approved.' $c.Scope
         }
     }
 
     # ---- Scorecard --------------------------------------------------------------------------
-    $privilegedUserRows = @($accessRows | Where-Object { $_.PrincipalCategory -in @('Member', 'Guest') -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })
+    $privilegedUserRows = @($accessRows | Where-Object { $_.PrincipalCategory -in $userCategories -and (Get-AzRbacTierRank -Tier $_.PrivilegeTier) -ge 3 })
     $standingPriv = @($privilegedUserRows | Where-Object { $_.IsStanding }).Count
     $eligiblePriv = @($privilegedUserRows | Where-Object { $_.EffectiveState -eq 'Eligible' }).Count
     $pimCoverage = if (($standingPriv + $eligiblePriv) -gt 0) { [Math]::Round(($eligiblePriv / ($standingPriv + $eligiblePriv)) * 100, 1) } else { 100 }
-    $standingCriticalUsers = @($accessRows | Where-Object { $_.IsStanding -and $_.PrivilegeTier -eq 'Critical' -and $_.PrincipalCategory -in @('Member', 'Guest') } | Select-Object -ExpandProperty PrincipalId -Unique).Count
-    $rootCount = @($normalised | Where-Object { $_.ScopeLevel -eq 'Root' }).Count
-    $guestPriv = @($privilegedUserRows | Where-Object { $_.PrincipalCategory -eq 'Guest' } | Select-Object -ExpandProperty PrincipalId -Unique).Count
-    $orphaned = @($normalised | Where-Object { -not $_.PrincipalResolved }).Count
-    $spCritical = @($accessRows | Where-Object { $_.PrincipalCategory -in @('ServicePrincipal', 'ManagedIdentity') -and $_.PrivilegeTier -eq 'Critical' } | Select-Object -ExpandProperty PrincipalId -Unique).Count
+    $standingCriticalUsers = @($accessRows | Where-Object { $_.IsStanding -and $_.PrivilegeTier -eq 'Critical' -and $_.PrincipalCategory -in $userCategories } | Select-Object -ExpandProperty PrincipalId -Unique).Count
+    $canGrantAccess = @($accessRows | Where-Object { $_.PrivilegeTier -eq 'Critical' -and $_.PrincipalCategory -ne 'MicrosoftPlatform' -and $_.PrincipalCategory -ne 'Group' } | Select-Object -ExpandProperty PrincipalId -Unique).Count
+    $rootCount = @($normalised | Where-Object { $_.ScopeLevel -eq 'Root' -and $_.PrincipalCategory -ne 'MicrosoftPlatform' }).Count
+    $guestAny = @($accessRows | Where-Object { $_.PrincipalCategory -eq 'Guest' } | Select-Object -ExpandProperty PrincipalId -Unique).Count
+    $orphaned = @($normalised | Where-Object { $_.PrincipalCategory -eq 'Deleted' }).Count
+    $spCritical = @($accessRows | Where-Object { $_.PrincipalCategory -in $workloadCategories -and $_.PrivilegeTier -eq 'Critical' } | Select-Object -ExpandProperty PrincipalId -Unique).Count
     $subsOverLimit = @($subscriptionSummary | Where-Object { $_.StandingOwners -gt $MaxOwnersPerSubscription }).Count
+    $dormant = @($findings | Where-Object { $_.FindingType -eq 'DormantPrivilegedAccount' }).Count
+    $kvPolicies = @($resourceSecurity.KeyVaults | Where-Object { $_.PermissionModel -eq 'Access policies' }).Count
+    $externalTenants = @($lighthouse | Select-Object -ExpandProperty ManagedByTenantId -Unique).Count
+
+    $statusOf = {
+        param($Value, $Green, $Amber)
+        if ($Value -le $Green) { return 'Green' }
+        if ($Value -le $Amber) { return 'Amber' }
+        return 'Red'
+    }
 
     $scorecard = @(
-        [pscustomobject]@{ Metric = 'ManagementGroupsVisible'; Value = $mgNames.Count; Status = 'Info'; Target = ''; Commentary = 'Management groups readable by the review account.' },
-        [pscustomobject]@{ Metric = 'SubscriptionsReviewed'; Value = $subIds.Count; Status = 'Info'; Target = ''; Commentary = 'Subscriptions in scope for this review.' },
-        [pscustomobject]@{ Metric = 'ResourcesInScope'; Value = $totalResources; Status = 'Info'; Target = ''; Commentary = 'Resources counted through Azure Resource Graph.' },
-        [pscustomobject]@{ Metric = 'ActiveAssignments'; Value = @($normalised | Where-Object { $_.AssignmentState -eq 'Active' }).Count; Status = 'Info'; Target = ''; Commentary = 'Active role assignments at every scope.' },
-        [pscustomobject]@{ Metric = 'EligibleAssignments'; Value = @($normalised | Where-Object { $_.AssignmentState -eq 'Eligible' }).Count; Status = 'Info'; Target = ''; Commentary = 'PIM for Azure resources eligible assignments.' },
-        [pscustomobject]@{ Metric = 'PrivilegedPimCoveragePercent'; Value = $pimCoverage; Status = $(if ($pimCoverage -ge 90) { 'Green' } elseif ($pimCoverage -ge 60) { 'Amber' } else { 'Red' }); Target = '>= 90'; Commentary = 'Share of user access paths to Critical/High roles that are eligible rather than standing.' },
-        [pscustomobject]@{ Metric = 'UsersWithStandingCriticalAccess'; Value = $standingCriticalUsers; Status = $(if ($standingCriticalUsers -le 2) { 'Green' } elseif ($standingCriticalUsers -le 5) { 'Amber' } else { 'Red' }); Target = '<= 2'; Commentary = 'Users with permanent Owner, User Access Administrator or equivalent anywhere in Azure.' },
-        [pscustomobject]@{ Metric = 'RootScopeAssignments'; Value = $rootCount; Status = $(if ($rootCount -eq 0) { 'Green' } else { 'Red' }); Target = '0'; Commentary = 'Assignments at tenant root (/).' },
-        [pscustomobject]@{ Metric = 'GuestsWithPrivilegedAccess'; Value = $guestPriv; Status = $(if ($guestPriv -eq 0) { 'Green' } else { 'Red' }); Target = '0'; Commentary = 'Guest accounts with Critical or High tier Azure roles.' },
-        [pscustomobject]@{ Metric = 'OrphanedAssignments'; Value = $orphaned; Status = $(if ($orphaned -eq 0) { 'Green' } else { 'Amber' }); Target = '0'; Commentary = 'Assignments to deleted or unreadable principals.' },
-        [pscustomobject]@{ Metric = 'WorkloadIdentitiesWithCriticalRoles'; Value = $spCritical; Status = $(if ($spCritical -eq 0) { 'Green' } else { 'Amber' }); Target = '0'; Commentary = 'Service principals and managed identities that can manage role assignments.' },
-        [pscustomobject]@{ Metric = 'SubscriptionsOverOwnerLimit'; Value = $subsOverLimit; Status = $(if ($subsOverLimit -eq 0) { 'Green' } else { 'Red' }); Target = '0'; Commentary = "Subscriptions with more than $MaxOwnersPerSubscription standing Critical-tier users." },
-        [pscustomobject]@{ Metric = 'CoverageGaps'; Value = $script:AzRbacCoverageGaps.Count; Status = $(if ($script:AzRbacCoverageGaps.Count -eq 0) { 'Green' } else { 'Amber' }); Target = '0'; Commentary = 'Scopes or APIs the review account could not read.' }
+        [pscustomobject]@{ Metric = 'Management groups'; Value = $mgNames.Count; Status = 'Info'; Target = ''; Commentary = 'Management groups readable by the review account.' },
+        [pscustomobject]@{ Metric = 'Subscriptions reviewed'; Value = $subIds.Count; Status = 'Info'; Target = ''; Commentary = "Resources visible in $($visibleSubIds.Count) of them." },
+        [pscustomobject]@{ Metric = 'Resources visible'; Value = $totalResources; Status = 'Info'; Target = ''; Commentary = 'Resources the review account can read through Azure Resource Graph.' },
+        [pscustomobject]@{ Metric = 'Role assignments (active)'; Value = @($normalised | Where-Object { $_.AssignmentState -eq 'Active' }).Count; Status = 'Info'; Target = ''; Commentary = 'At every scope from tenant root to individual resources.' },
+        [pscustomobject]@{ Metric = 'Role assignments (PIM-eligible)'; Value = @($normalised | Where-Object { $_.AssignmentState -eq 'Eligible' }).Count; Status = 'Info'; Target = ''; Commentary = 'PIM for Azure resources.' },
+        [pscustomobject]@{ Metric = 'Identities that can grant access'; Value = $canGrantAccess; Status = 'Info'; Target = ''; Commentary = 'Users and workload identities holding Owner, User Access Administrator or equivalent anywhere (excluding Microsoft platform identities).' },
+        [pscustomobject]@{ Metric = 'Users with standing Critical access'; Value = $standingCriticalUsers; Status = (& $statusOf $standingCriticalUsers 2 5); Target = '<= 2 (break-glass)'; Commentary = 'Permanent Owner, User Access Administrator or equivalent.' },
+        [pscustomobject]@{ Metric = 'Privileged access through PIM'; Value = "$pimCoverage%"; Status = $(if ($pimCoverage -ge 90) { 'Green' } elseif ($pimCoverage -ge 60) { 'Amber' } else { 'Red' }); Target = '>= 90%'; Commentary = 'Share of user access paths to Critical/High roles that are eligible rather than standing.' },
+        [pscustomobject]@{ Metric = 'Dormant privileged users'; Value = $(if ($signIn -and $signIn.SignInAvailable) { $dormant } else { 'n/a' }); Status = $(if ($signIn -and $signIn.SignInAvailable) { & $statusOf $dormant 0 2 } else { 'Info' }); Target = '0'; Commentary = "No sign-in for $DormantDays days." },
+        [pscustomobject]@{ Metric = 'Assignments at tenant root'; Value = $rootCount; Status = $(if ($rootCount -eq 0) { 'Green' } else { 'Red' }); Target = '0'; Commentary = 'Excluding Microsoft platform identities such as MS-PIM.' },
+        [pscustomobject]@{ Metric = 'Guests with Azure access'; Value = $guestAny; Status = (& $statusOf $guestAny 0 3); Target = '0'; Commentary = 'Directly or through groups.' },
+        [pscustomobject]@{ Metric = 'Orphaned assignments'; Value = $orphaned; Status = (& $statusOf $orphaned 0 10); Target = '0'; Commentary = 'Assignments to principals confirmed deleted.' },
+        [pscustomobject]@{ Metric = 'Workload identities that can grant access'; Value = $spCritical; Status = (& $statusOf $spCritical 0 3); Target = '0'; Commentary = 'Service principals and managed identities with Critical-tier roles.' },
+        [pscustomobject]@{ Metric = 'External tenants (Lighthouse)'; Value = $(if ($SkipExtendedChecks) { 'n/a' } else { $externalTenants }); Status = 'Info'; Target = ''; Commentary = 'Organisations with delegated access that is not shown in role assignments.' },
+        [pscustomobject]@{ Metric = 'Key Vaults on access policies'; Value = $(if ($SkipExtendedChecks) { 'n/a' } else { $kvPolicies }); Status = $(if ($SkipExtendedChecks) { 'Info' } else { & $statusOf $kvPolicies 0 5 }); Target = '0'; Commentary = 'Secret access governed outside Azure RBAC.' },
+        [pscustomobject]@{ Metric = 'Subscriptions over owner limit'; Value = $subsOverLimit; Status = $(if ($subsOverLimit -eq 0) { 'Green' } else { 'Red' }); Target = '0'; Commentary = "More than $MaxOwnersPerSubscription users with standing Critical-tier access." },
+        [pscustomobject]@{ Metric = 'Coverage gaps'; Value = $script:AzRbacCoverageGaps.Count; Status = $(if ($script:AzRbacCoverageGaps.Count -eq 0) { 'Green' } else { 'Amber' }); Target = '0'; Commentary = 'Scopes or APIs the review account could not read (see the last section).' }
     )
 
     # ---- Optional resource-level access ------------------------------------------------------
     $resourceAccessPath = $null
-    if ($IncludeResourceLevelAccess -and $subIds.Count -gt 0) {
+    if ($IncludeResourceLevelAccess -and $visibleSubIds.Count -gt 0) {
         Write-PimLog -Message 'Building resource-level access (one row per resource per principal). This can be large.'
         $resourceAccessPath = Join-Path -Path $rawFolder -ChildPath 'AzureResourceAccess.csv'
         if (Test-Path -Path $resourceAccessPath) { Remove-Item -Path $resourceAccessPath -Force }
@@ -1861,7 +2175,7 @@ function Get-AzureRbacReview {
 
         $resources = @()
         try {
-            $resources = @(Invoke-AzRbacResourceGraphQuery -Subscriptions $subIds -Query 'resources | project id = tolower(id), name, type, resourceGroup = tolower(resourceGroup), subscriptionId = tolower(subscriptionId), location')
+            $resources = @(Invoke-AzRbacResourceGraphQuery -Subscriptions $visibleSubIds -Query 'resources | project id = tolower(id), name, type, resourceGroup = tolower(resourceGroup), subscriptionId = tolower(subscriptionId), location')
         }
         catch {
             Write-PimLog -Level WARN -Message "Resource inventory query failed: $($_.Exception.Message)"
@@ -1874,7 +2188,6 @@ function Get-AzureRbacReview {
             if ($bySub.ContainsKey($res.subscriptionId)) { $applicable += @($bySub[$res.subscriptionId]) }
             $rgKey = "$($res.subscriptionId)|$($res.resourceGroup)"
             if ($byRg.ContainsKey($rgKey)) { $applicable += @($byRg[$rgKey]) }
-            # Child resources (for example a SQL database) inherit from their parent resource scope.
             foreach ($k in @($byRes.Keys)) {
                 if ($res.id -eq $k -or $res.id.StartsWith("$k/")) { $applicable += @($byRes[$k]) }
             }
@@ -1915,14 +2228,18 @@ function Get-AzureRbacReview {
     }
 
     # ---- Export -----------------------------------------------------------------------------
-    $assignmentExport = @($normalised | Select-Object PrincipalDisplayName, PrincipalUserPrincipalName, PrincipalCategory, PrincipalType, AccountEnabled, PrincipalResolved, RoleName, RoleType, PrivilegeTier, ScopeLevel, ScopeName, SubscriptionName, ResourceGroup, ResourceType, ResourcesInScope, AssignmentState, AssignmentType, StartDateTime, EndDateTime, HasCondition, Condition, CreatedOn, CreatedBy, Description, Scope, SubscriptionId, ManagementGroupId, PrincipalId, RoleDefinitionGuid, AssignmentId, Source)
+    $severityOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
+    $assignmentExport = @($normalised | Select-Object PrincipalDisplayName, PrincipalUserPrincipalName, PrincipalCategory, PrincipalType, AccountEnabled, PrincipalResolved, RoleName, RoleType, PrivilegeTier, TierNote, ScopeLevel, ScopeName, SubscriptionName, ResourceGroup, ResourceType, ResourcesInScope, AssignmentState, AssignmentType, StartDateTime, EndDateTime, HasCondition, Condition, CreatedOn, CreatedBy, Description, Scope, SubscriptionId, ManagementGroupId, PrincipalId, RoleDefinitionGuid, AssignmentId, Source)
     $accessExport = @($accessRows | Select-Object DisplayName, UserPrincipalName, PrincipalCategory, AccountEnabled, AccessPath, ViaGroupName, MembershipType, RoleName, RoleType, PrivilegeTier, ScopeLevel, ScopeName, SubscriptionName, ResourceGroup, ResourcesInScope, AssignmentState, EffectiveState, AssignmentType, IsStanding, EndDateTime, HasCondition, Scope, SubscriptionId, ManagementGroupId, PrincipalId, ViaGroupId, AssignmentId)
     $userSummaryExport = @($userSummary | Sort-Object -Property @{ Expression = { Get-AzRbacTierRank -Tier $_.HighestTier }; Descending = $true }, @{ Expression = 'StandingPrivilegedCount'; Descending = $true }, DisplayName)
-    $severityOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
     $findingsExport = @($findings | Sort-Object -Property @{ Expression = { $severityOrder[$_.RiskRating] } }, FindingType, Subject)
     $groupOwnerExport = @($groupOwners | Select-Object GroupDisplayName, HighestGroupTier, IsAssignableToRole, OwnerDisplayName, OwnerUserPrincipalName, OwnerType, GroupId, OwnerId)
     $subscriptionExport = @($subscriptionSummary)
     $coverageExport = @($script:AzRbacCoverageGaps)
+    $activityExport = if ($activity) { @($activity.CallerActivity | Sort-Object -Property ChangeEvents -Descending | Select-Object Caller, SubscriptionName, ChangeEvents, @{ Name = 'LastChange'; Expression = { if ($_.LastChange -is [datetime]) { $_.LastChange.ToString('yyyy-MM-dd HH:mm') } else { $_.LastChange } } }, TopOperations, HasAzureRole, PrincipalId, SubscriptionId) } else { @() }
+    $rbacChangeExport = if ($activity) { @($activity.RbacChanges | Select-Object @{ Name = 'Timestamp'; Expression = { if ($_.Timestamp -is [datetime]) { $_.Timestamp.ToString('yyyy-MM-dd HH:mm') } else { $_.Timestamp } } }, Change, ChangedBy, PrincipalDisplayName, PrincipalCategory, RoleName, PrivilegeTier, SubscriptionName, Scope, PrincipalId, RoleDefinitionGuid, AssignmentId) } else { @() }
+    $lighthouseExport = @($lighthouse | Select-Object SubscriptionName, ManagedByTenant, ManagedByTenantId, OfferName, AuthorizationType, PrincipalDisplayName, RoleName, PrivilegeTier, CanAssignRoles, Scope, PrincipalId, RoleDefinitionGuid, Description)
+    $kvPolicyExport = @($resourceSecurity.KeyVaultAccessPolicies | Select-Object SubscriptionName, VaultName, PrincipalDisplayName, UserPrincipalName, PrincipalCategory, SecretPermissions, KeyPermissions, CertificatePermissions, CanReadSecretsOrKeys, ObjectId, ApplicationId, ResourceId)
 
     Export-PimData -Data $assignmentExport -CsvPath (Join-Path $rawFolder 'AzureRoleAssignments.csv')
     Export-PimData -Data $accessExport -CsvPath (Join-Path $rawFolder 'AzureUserAccess.csv')
@@ -1932,22 +2249,56 @@ function Get-AzureRbacReview {
     Export-PimData -Data $findingsExport -CsvPath (Join-Path $rawFolder 'AzureFindings.csv')
     Export-PimData -Data @($groupMembers) -CsvPath (Join-Path $rawFolder 'AzureGroupMembers.csv')
     Export-PimData -Data $groupOwnerExport -CsvPath (Join-Path $rawFolder 'AzureGroupOwners.csv')
+    Export-PimData -Data $groupSummary -CsvPath (Join-Path $rawFolder 'AzureGroupSummary.csv')
+    Export-PimData -Data $workloadSummary -CsvPath (Join-Path $rawFolder 'AzureWorkloadIdentities.csv')
     Export-PimData -Data $customRoles -CsvPath (Join-Path $rawFolder 'AzureCustomRoles.csv')
     Export-PimData -Data $scorecard -CsvPath (Join-Path $rawFolder 'AzureScorecard.csv')
     Export-PimData -Data $coverageExport -CsvPath (Join-Path $rawFolder 'AzureCoverageGaps.csv')
     Export-PimData -Data @($roleInfo.Values | Sort-Object RoleType, RoleName) -CsvPath (Join-Path $rawFolder 'AzureRoleDefinitions.csv')
+    Export-PimData -Data $lighthouseExport -CsvPath (Join-Path $rawFolder 'AzureLighthouseDelegations.csv')
+    Export-PimData -Data @($denyAssignments) -CsvPath (Join-Path $rawFolder 'AzureDenyAssignments.csv')
+    Export-PimData -Data @($resourceSecurity.KeyVaults) -CsvPath (Join-Path $rawFolder 'AzureKeyVaults.csv')
+    Export-PimData -Data $kvPolicyExport -CsvPath (Join-Path $rawFolder 'AzureKeyVaultAccessPolicies.csv')
+    Export-PimData -Data @($resourceSecurity.StorageAccounts) -CsvPath (Join-Path $rawFolder 'AzureStorageAccounts.csv')
+    Export-PimData -Data @($resourceSecurity.SqlServers) -CsvPath (Join-Path $rawFolder 'AzureSqlServers.csv')
+    Export-PimData -Data @($resourceSecurity.AksClusters) -CsvPath (Join-Path $rawFolder 'AzureAksClusters.csv')
+    Export-PimData -Data @($resourceSecurity.LocalAuthResources) -CsvPath (Join-Path $rawFolder 'AzureLocalAuthResources.csv')
+    Export-PimData -Data $activityExport -CsvPath (Join-Path $rawFolder 'AzureActivityByCaller.csv')
+    Export-PimData -Data $rbacChangeExport -CsvPath (Join-Path $rawFolder 'AzureRoleAssignmentChanges.csv')
 
-    $summaryInfo = New-AzRbacSummaryReport `
-        -OutputFolder $OutputFolder `
-        -TenantLabel $TenantLabel `
-        -TenantIdValue $tenantGuid `
-        -Scorecard $scorecard `
-        -Findings $findingsExport `
-        -SubscriptionSummary $subscriptionExport `
-        -UserSummary $userSummaryExport `
-        -CustomRoles $customRoles `
-        -GroupOwners $groupOwnerExport `
-        -CoverageGaps $coverageExport
+    $reportData = @{
+        TenantLabel          = $TenantLabel
+        TenantId             = $tenantGuid
+        MaxOwners            = $MaxOwnersPerSubscription
+        DormantDays          = $DormantDays
+        ActivityDays         = $(if ($activity) { $activity.Days } else { $null })
+        SignInAvailable      = [bool]($signIn -and $signIn.SignInAvailable)
+        ExtendedChecks       = -not $SkipExtendedChecks
+        Scorecard            = $scorecard
+        Findings             = $findingsExport
+        Subscriptions        = $subscriptionExport
+        SubscriptionDetail   = $subscriptionDetail
+        SubscriptionNames    = $subNames
+        UserSummary          = $userSummaryExport
+        Workloads            = $workloadSummary
+        Groups               = $groupSummary
+        CustomRoles          = $customRoles
+        Lighthouse           = $lighthouseExport
+        KeyVaults            = @($resourceSecurity.KeyVaults)
+        KeyVaultPolicies     = $kvPolicyExport
+        StorageAccounts      = @($resourceSecurity.StorageAccounts)
+        SqlServers           = @($resourceSecurity.SqlServers)
+        AksClusters          = @($resourceSecurity.AksClusters)
+        LocalAuthResources   = @($resourceSecurity.LocalAuthResources)
+        RbacChanges          = $rbacChangeExport
+        ActivityByCaller     = $activityExport
+        DenyAssignments      = @($denyAssignments)
+        CoverageGaps         = $coverageExport
+        ManagementGroups     = $mgNames.Count
+        VisibleSubscriptions = $visibleSubIds.Count
+        TotalResources       = $totalResources
+    }
+    $summaryInfo = New-AzureRbacReport -OutputFolder $OutputFolder -Data $reportData
 
     $workbookWritten = $false
     $targetWorkbook = $WorkbookPath
@@ -1962,10 +2313,22 @@ function Get-AzureRbacReview {
         @{ Name = '44_Az_User_Access'; Data = $accessExport },
         @{ Name = '45_Az_Role_Assignments'; Data = $assignmentExport },
         @{ Name = '46_Az_Subscriptions'; Data = $subscriptionExport },
-        @{ Name = '47_Az_Group_Members'; Data = @($groupMembers) },
-        @{ Name = '48_Az_Group_Owners'; Data = $groupOwnerExport },
-        @{ Name = '49_Az_Custom_Roles'; Data = $customRoles },
-        @{ Name = '50_Az_Coverage_Gaps'; Data = $coverageExport }
+        @{ Name = '47_Az_Groups'; Data = $groupSummary },
+        @{ Name = '48_Az_Group_Members'; Data = @($groupMembers) },
+        @{ Name = '49_Az_Group_Owners'; Data = $groupOwnerExport },
+        @{ Name = '50_Az_Workload_Identities'; Data = $workloadSummary },
+        @{ Name = '51_Az_Custom_Roles'; Data = $customRoles },
+        @{ Name = '52_Az_Lighthouse'; Data = $lighthouseExport },
+        @{ Name = '53_Az_KeyVaults'; Data = @($resourceSecurity.KeyVaults) },
+        @{ Name = '54_Az_KV_Access_Policies'; Data = $kvPolicyExport },
+        @{ Name = '55_Az_Storage'; Data = @($resourceSecurity.StorageAccounts) },
+        @{ Name = '56_Az_SQL'; Data = @($resourceSecurity.SqlServers) },
+        @{ Name = '57_Az_AKS'; Data = @($resourceSecurity.AksClusters) },
+        @{ Name = '58_Az_Local_Auth'; Data = @($resourceSecurity.LocalAuthResources) },
+        @{ Name = '59_Az_Activity_By_Caller'; Data = $activityExport },
+        @{ Name = '60_Az_RBAC_Changes'; Data = $rbacChangeExport },
+        @{ Name = '61_Az_Deny_Assignments'; Data = @($denyAssignments) },
+        @{ Name = '62_Az_Coverage_Gaps'; Data = $coverageExport }
     )
     try {
         $workbookWritten = Write-AzRbacWorkbookSheets -WorkbookPath $targetWorkbook -SheetMap $sheetMap
