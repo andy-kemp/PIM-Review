@@ -318,6 +318,8 @@ The Phase 2 assessment turns the Entra and Azure exports into the registers the 
 | `P2_PolicyGaps.csv` | PIM role and group settings against the trust-level baseline |
 | `P2_RoleCatalogue.csv` | Every role in use with trust level and holders (runbook 1.2) |
 | `P2_MigrationWorksheet.csv` | One row per privileged path with a proposed action and blank Target path / Wave / Role owner / Decision columns |
+| `P2_CladProvisioning.csv` | Everyone doing admin work from an everyday or guest account (including PIM approvers): existing CLAD to move rights to, or the proposed CLAD name (clad_<surname><initial>, extended on clashes), rights to move and notes |
+| `P2_AccessReviewPlan.csv` | Proposed access reviews for every privileged role, PIM group and Azure subscription on the trust-level cycle (TL1 quarterly, TL2 six-monthly, TL3 annually), plus supplier, CLAD and approver reviews, against the reviews configured today |
 | `P2_ExceptionCandidates.csv` | Break-glass, generic accounts, standing TL1/TL2, non-human TL1 |
 | `P2_HldFindings.csv` | Status of F01-F15 in this tenant |
 | `P2_Maturity.csv` | Measured indicators for the HLD 6.7 maturity baseline |

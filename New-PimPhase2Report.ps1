@@ -370,6 +370,17 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
         }
     } | Sort-Object People -Descending)
     $null = $html.Append((& $det "Routes to TL1 roles: $($tl1ByRole.Count) roles" (ConvertTo-P2HtmlTable -Rows $tl1ByRole -Columns @('Plane', 'Role', 'People', 'Direct', 'ViaGroup', 'Eligible', 'Permanent', 'Groups') -MaxRows 80 -CsvName 'P2_TL1Paths.csv') $false))
+    $cladRows = @($Data.CladRows)
+    if ($cladRows.Count -gt 0) {
+        $cladBody = "<p class=""more"">Everyone who does admin work from an everyday or guest account, including approvers. $(@($cladRows | Where-Object { $_.Action -like '*existing CLAD*' }).Count) already have a CLAD and need their rights moved; $(@($cladRows | Where-Object { $_.Action -like '*create CLAD*' }).Count) need a CLAD created, named by the existing pattern (clad_&lt;surname&gt;&lt;initial&gt;, extra first-name letters when the name is taken). Rows marked 'Naming pattern - confirm' matched an existing CLAD by name only.</p>" + (ConvertTo-P2HtmlTable -Rows $cladRows -Columns @('HighestTrustLevel', 'Person', 'Organisation', 'EverydayAccount', 'Action', 'ExistingClad', 'ExistingCladMatch', 'ProposedCladUpn', 'RoutesToMove', 'IsApprover', 'Notes') -MaxRows 150 -CsvName 'P2_CladProvisioning.csv')
+        $null = $html.Append((& $det "Admin account (CLAD) provisioning: $($cladRows.Count) people" $cladBody $false))
+    }
+    $plan = @($Data.ReviewPlan)
+    if ($plan.Count -gt 0) {
+        $existingList = @($Data.AccessReviews | ForEach-Object { "$($_.DisplayName) ($($_.Status))" })
+        $planBody = "<p class=""more"">Proposed access reviews: every privileged role, PIM group and Azure subscription on its trust-level cycle (TL1 quarterly, TL2 six-monthly, TL3 annually), plus supplier, CLAD and approver reviews. $(@($Data.AccessReviews).Count) reviews are configured today$(if ($existingList.Count) { ': ' + [System.Net.WebUtility]::HtmlEncode(($existingList | Select-Object -First 8) -join '; ') } else { '' }).</p>" + (ConvertTo-P2HtmlTable -Rows $plan -Columns @('TrustLevel', 'Target', 'ReviewType', 'People', 'Frequency', 'Reviewers', 'ExistingReview', 'Notes') -MaxRows 120 -CsvName 'P2_AccessReviewPlan.csv')
+        $null = $html.Append((& $det "Access review plan: $($plan.Count) reviews" $planBody $false))
+    }
     $null = $html.Append((& $det "Groups that bundle roles: $(@($Data.Bundles).Count)" (ConvertTo-P2HtmlTable -Rows $Data.Bundles -Columns @('Group', 'HighestTrustLevel', 'Roles', 'TL1Roles', 'TL2Roles', 'TL3Roles', 'People', 'Recommendation') -MaxRows 60 -CsvName 'P2_GroupBundles.csv') $false))
     $standingPeople = @($Data.Standing | Where-Object { $_.AccountType -in $humanTypes })
     $null = $html.Append((& $det "Permanent admin access held by people: $($standingPeople.Count) routes" (ConvertTo-P2HtmlTable -Rows $standingPeople -Columns @('TrustLevel', 'Plane', 'Identity', 'AccountType', 'PersonOrganisation', 'Role', 'Scope', 'PathType', 'ViaGroup') -MaxRows 120 -CsvName 'P2_StandingAccess.csv') $false))

@@ -56,7 +56,7 @@ HUMAN = {"CLAD", "Other admin account", "Everyday", "Guest", "Generic/Service"}
 
 # Delivery phase for each control when it is not yet met. Generic: works for every tenant.
 PHASES = [
-    ("Now (0-30 days)", ["PIM-06", "ADM-02", "ADM-01", "PIM-08", "PIM-05", "AZ-04", "ID-07", "ID-08"]),
+    ("Now (0-30 days)", ["PIM-06", "ADM-04", "ADM-02", "ADM-01", "PIM-08", "PIM-05", "AZ-04", "ID-07", "ID-08"]),
     ("Next (30-90 days)", ["PIM-04", "PIM-01", "AZ-02", "AZ-01", "PIM-03", "ID-06", "ID-01", "ID-05", "ID-03", "PIM-10", "PIM-11", "PIM-07", "GOV-01", "PIM-02"]),
     ("Later (90 days +)", ["DEV-01", "ID-02", "GOV-02", "WL-01", "AZ-03", "LOG-01", "PIM-09", "ID-04", "ADM-03"]),
 ]
@@ -749,7 +749,43 @@ def build(args):
                 by[k][3].add(l.get("SubscriptionName"))
             b.table(["Managing organisation", "Authorisations", "Write-capable", "Permanent write-capable", "Subscriptions"],
                     [[k, v[0], v[1], v[2], len(v[3])] for k, v in sorted(by.items(), key=lambda kv: -kv[1][0])], [3.4, 1.4, 1.4, 1.8, 1.4])
-    b.h("9.4 Third-party, guest and shared accounts", 2)
+    clad = read_csv(ph, "P2_CladProvisioning.csv")
+    if clad:
+        b.h("9.4 Admin accounts (CLAD) for everyone doing admin work", 2)
+        mv = [c for c in clad if "existing CLAD" in c["Action"]]
+        cr = [c for c in clad if "create clad" in c["Action"].lower()]
+        conf = [c for c in mv if c["ExistingCladMatch"] != "Same person"]
+        b.p(f"Every person who does admin work from an everyday or guest account, including PIM approvers, should have a dedicated admin account (CLAD) and use only that for privileged access. {len(clad)} people are in this position: {len(mv)} already have a CLAD (their rights or approver role need moving to it) and {len(cr)} need a CLAD created.")
+        b.p("New CLADs follow the existing naming pattern: clad_<surname><first initial> (adding letters of the first name where that name is already taken), with the display name \"(Cloud Admin) First Last\". The proposed names, the rights to move and the approver changes are in P2_CladProvisioning.csv.")
+        rows = []
+        for tl in ("TL1", "TL2", "TL3"):
+            g = [c for c in clad if c["HighestTrustLevel"] == tl]
+            if g:
+                rows.append([tl, len(g), sum(1 for c in g if "existing CLAD" in c["Action"]), sum(1 for c in g if "create clad" in c["Action"].lower()), sum(1 for c in g if c["IsApprover"] == "True"), sum(as_int(c["RoutesToMove"]) for c in g)])
+        appr_only = [c for c in clad if not c["HighestTrustLevel"]]
+        if appr_only:
+            rows.append(["Approver only", len(appr_only), sum(1 for c in appr_only if "existing CLAD" in c["Action"]), sum(1 for c in appr_only if "create clad" in c["Action"].lower()), len(appr_only), 0])
+        b.table(["Highest level", "People", "CLAD exists", "CLAD to create", "Approvers", "Routes to move"], rows, [1.6, 1.0, 2.0, 1.6, 1.2, 1.4], badge_cols=(0,))
+        orgs = Counter(c["Organisation"] or "Not known" for c in clad)
+        b.p("By organisation: " + "; ".join(f"{k} {v}" for k, v in orgs.most_common()) + ".", size=9.5)
+        if conf:
+            b.p(f"{len(conf)} existing CLADs were matched by naming pattern only (for example where an older CLAD shortens the surname) and should be confirmed before rights are moved.", size=9.5)
+    plan = read_csv(ph, "P2_AccessReviewPlan.csv")
+    existing_reviews = read_csv(os.path.join(os.path.dirname(ph.rstrip("/\\")), "Raw"), "AccessReviews.beta.csv") if ph else []
+    if plan:
+        b.h("9.5 Access reviews", 2)
+        b.p(f"Access reviews keep privileged access correct after the remediation: they confirm each assignment is still needed and remove it when it is not. {len(existing_reviews) if existing_reviews else metrics.get('AccessReviewsConfigured', 0)} access reviews are configured today and none is confirmed to cover the privileged roles and PIM groups as a whole. The proposed plan gives every privileged role, PIM group and Azure subscription a review on its trust-level cycle.")
+        rows = []
+        for tl in ("TL1", "TL2", "TL3"):
+            g = [r for r in plan if r["TrustLevel"] == tl]
+            if g:
+                kinds = Counter(r["ReviewType"].split(" (")[0].replace("PIM access review of ", "").replace("Access review of ", "") for r in g)
+                rows.append([tl, len(g), g[0]["Frequency"], g[0]["DurationDays"] + " days", g[0]["Reviewers"], "; ".join(f"{v} {k}" for k, v in kinds.most_common())])
+        b.table(["Level", "Reviews", "Frequency", "Duration", "Reviewers", "What is reviewed"], rows, [0.8, 1.1, 1.3, 1.0, 3.3, 3.5], badge_cols=(0,))
+        b.p("All reviews: apply results automatically, remove access that is not confirmed, require a justification and show reviewer recommendations. Reviews of Azure resource roles need PIM for Azure resources enabled on the subscription. Access reviews of privileged roles need Entra ID P2 or ID Governance licences for the people reviewed. The full plan is in P2_AccessReviewPlan.csv.", size=9.5)
+        if existing_reviews:
+            b.table(["Existing review", "Status", "Default decision", "Justification"], [[r.get("DisplayName", "").strip(), r.get("Status", ""), r.get("DefaultDecision", ""), r.get("JustificationRequired", "")] for r in existing_reviews], [5, 1.4, 1.6, 1.4])
+    b.h("9.6 Third-party, guest and shared accounts", 2)
     cats = Counter(e["Category"] for e in exceptions)
     b.p("Accounts that will need replacing, converting or recording as exceptions under the PIM Phase 2 exception process (HLD 8.4):")
     b.table(["Category", "Count", "Required evidence for an exception"],
@@ -762,7 +798,7 @@ def build(args):
     b.h("10. NCSC Benchmark", 1)
     b.p("The NCSC Cyber Assessment Framework (CAF 4.0) is the benchmark for UK public sector organisations, including under GovAssure. Principle B2 covers identity and access control. The ratings below are indicative: configuration evidence alone cannot show process indicators such as joiners, movers and leavers records, review sign-offs or monitoring, so those are marked Not assessed. A single weak control at High or Critical severity gives Not achieved, mirroring the CAF approach.")
     b.table(["Outcome", "Title", "Indicative rating", "Good", "Partial", "Weak", "Controls"],
-            [[c["Outcome"], c["Title"], c["Rating"], c["Good"], c["Partial"], c["Weak"], c["Controls"]] for c in caf], [1.1, 2.7, 1.7, 0.7, 0.8, 0.7, 3.3], badge_cols=(2,))
+            [[c["Outcome"], c["Title"], c["Rating"], c["Good"], c["Partial"], c["Weak"], c["Controls"]] for c in caf], [1.1, 2.5, 1.6, 0.85, 0.9, 0.85, 3.2], badge_cols=(2,))
     ssa = defaultdict(list)
     for c in controls:
         ssa[c["NcscPrinciple"]].append(c)

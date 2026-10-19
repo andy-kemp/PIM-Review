@@ -45,7 +45,7 @@ function Get-PimAuditControls {
         'ID-04' = 'no Conditional Access MFA policy targets admin roles'; 'ID-05' = 'shared and service user accounts hold admin rights'; 'ID-06' = 'supplier and guest admin access is permanent'
         'ID-07' = 'disabled accounts still hold access'; 'ID-08' = 'some assignments belong to deleted identities'; 'DEV-01' = 'admin access is not limited to trusted admin devices'
         'GOV-01' = 'privileged access is not reviewed regularly'; 'GOV-02' = 'some privileged users are not licensed for PIM'
-        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'TL1 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'AZ-04' = 'other organisations have permanent write access to Azure through Lighthouse'; 'WL-01' = 'automation accounts hold TL1 rights'
+        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'TL1 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'AZ-04' = 'other organisations have permanent write access to Azure through Lighthouse'; 'ADM-04' = 'Global Administrator is granted through groups'; 'WL-01' = 'automation accounts hold TL1 rights'
     }
     $controls = New-Object System.Collections.ArrayList
     $add = {
@@ -92,6 +92,18 @@ function Get-PimAuditControls {
             'Only the two break-glass accounts hold Global Administrator permanently; everyone else is eligible and activates when needed.' `
             'Convert permanent Global Administrator assignments to eligible in PIM.' `
             'B2.c' 'SSA 4' 'Microsoft: use PIM for just-in-time access' 'P2_StandingAccess.csv'
+    }
+
+    $gaHuman = @($entraHuman | Where-Object { $_.Role -eq 'Global Administrator' })
+    if ($hasEntra -and $gaHuman.Count -gt 0) {
+        $viaGroup = @($gaHuman | Where-Object { $_.PathType -ne 'Direct' })
+        $groups = @($viaGroup | Where-Object ViaGroup | Select-Object -ExpandProperty ViaGroup -Unique)
+        & $add 'ADM-04' 'Administrator population' 'Global Administrator is only assigned directly to named admin accounts, never through a group' $(if ($viaGroup.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
+            $(if ($viaGroup.Count -eq 0) { 'Every route to Global Administrator is a direct assignment to a named account.' } else { "$(& $pl @(& $peopleOf $viaGroup).Count 'person reaches' 'people reach') Global Administrator through $(& $pl $groups.Count 'group' 'groups') ($($groups -join ', ')) rather than a direct assignment." }) `
+            'Through a group, Global Administrator is granted by group membership: whoever manages the group decides who becomes Global Administrator, the role cannot have its own settings or review, and one activation brings every other role in the group with it.' `
+            'Global Administrator assigned directly, as eligible, to each named CLAD in the agreed population, with its own approval, activation and review settings. No group holds Global Administrator.' `
+            'Remove Global Administrator from the groups and assign it directly (eligible) to the agreed named CLADs only.' `
+            'B2.c' 'SSA 3' 'HLD 7.6.1: TL1 roles assigned directly as eligible' 'P2_TL1Paths.csv'
     }
 
     $bg = @($identities | Where-Object AccountType -eq 'BreakGlass')
@@ -242,10 +254,10 @@ function Get-PimAuditControls {
         $clad = @($humanIds | Where-Object { $_.AccountType -in @('CLAD', 'Other admin account') })
         $res = if ($everydayHigh.Count -eq 0) { 'Good' } else { 'Weak' }
         & $add 'ID-01' 'Admin identities' 'Admin rights are held by separate admin accounts, not everyday accounts' $res $(if ($everydayT1.Count -gt 0) { 'High' } else { 'Medium' }) `
-            $(if ($res -eq 'Good') { "All TL1 and TL2 access is held by dedicated admin accounts ($($clad.Count) in use)." } else { "$($clad.Count) dedicated admin accounts are in use, but $(& $pl $everydayHigh.Count 'everyday or guest account holds' 'everyday or guest accounts hold') TL1/TL2 access ($($everydayT1.Count) at TL1)." }) `
+            $(if ($res -eq 'Good') { "All TL1 and TL2 access is held by dedicated admin accounts ($($clad.Count) in use)." } else { $cr = @($Ctx.CladRows); "$($clad.Count) dedicated admin accounts are in use, but $(& $pl $everydayHigh.Count 'everyday or guest account holds' 'everyday or guest accounts hold') TL1/TL2 access ($($everydayT1.Count) at TL1). Across all levels, $(@($cr | Where-Object { $_.Action -like '*existing CLAD*' }).Count) of these people already have a CLAD and $(@($cr | Where-Object { $_.Action -like '*create CLAD*' }).Count) need one (P2_CladProvisioning.csv)." }) `
             'Everyday accounts read email and browse the web, so they are the accounts most likely to be phished. Admin rights on them put privilege one click away from an attacker.' `
             'Privileged roles held only by dedicated, cloud-only admin accounts that are not used for email or browsing.' `
-            'Move the listed access to each person''s admin account and remove it from everyday and guest accounts.' `
+            'Give every person who does admin work a CLAD (clad_<surname><initial>, display name "(Cloud Admin) First Last"), move their rights to it and remove all admin rights and approver membership from everyday and guest accounts.' `
             'B2.c' 'SSA 3' 'NCSC CAF B2.c: dedicated, separate privileged accounts' 'P2_PrivilegedIdentities.csv'
 
         $withLicence = @($clad | Where-Object { $_.Issues -match 'productivity licence' })
@@ -350,7 +362,7 @@ function Get-PimAuditControls {
             $(if ($reviews.Count -eq 0) { 'No access reviews are configured.' } elseif ($privReviews.Count -eq 0) { "$(& $pl $reviews.Count 'access review is' 'access reviews are') configured, but none appears to cover privileged roles or PIM groups: $(@($reviews | Select-Object -ExpandProperty DisplayName -First 4) -join '; ')." } else { "$(& $pl $privReviews.Count 'access review appears' 'access reviews appear') to cover some privileged access ($(@($privReviews | Select-Object -ExpandProperty DisplayName -First 4) -join '; ')). Confirm every TL1 role and PIM group is in scope." }) `
             'Without regular review, eligibility builds up as people change roles, and nobody confirms it is still needed.' `
             'Recurring access reviews of every privileged role and PIM group: quarterly for TL1, six-monthly for TL2, annually for TL3, with auto-removal of unconfirmed access.' `
-            'Create PIM access reviews for TL1 roles and the PIM groups, owned by the role owners.' `
+            "Set up the access reviews in P2_AccessReviewPlan.csv ($(@($Ctx.ReviewPlan).Count) reviews): every privileged role, PIM group and Azure subscription on its trust-level cycle, plus supplier, CLAD and approver reviews, with automatic removal when access is not confirmed." `
             'B2.c, B2.d' 'SSA 4' 'NCSC CAF B2.c/B2.d: privileged rights regularly reviewed' 'AccessReviews.beta.csv'
 
         $noP2 = @($Ctx.NoP2)

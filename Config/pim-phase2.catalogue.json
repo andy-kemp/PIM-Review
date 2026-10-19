@@ -601,7 +601,10 @@
     ],
     "BreakGlassUpns": [],
     "LinkAttribute": null,
-    "IdentityMapCsv": null
+    "IdentityMapCsv": null,
+    "CladDisplayNameFormat": "(Cloud Admin) {First} {Last}",
+    "CladUpnDomain": null,
+    "_cladNaming": "New CLADs: <prefix><surname><first initial>@<CladUpnDomain>, adding letters of the first name when taken (clad_smithj, clad_smithjo). CladUpnDomain null = the domain most existing CLADs use."
   },
   "Organisations": {
     "_about": "Map email/UPN domains (including the source domain of guest #EXT# accounts) to organisations. Type: Tenant, Operator, Partner, Supplier.",

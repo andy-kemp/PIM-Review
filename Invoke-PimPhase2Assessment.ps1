@@ -764,7 +764,8 @@ function Invoke-PimPhase2Assessment {
         $distinctLevels = @($tls | Select-Object -Unique)
         $isBundle = $roles.Count -gt 1
         $rec = 'Retain - validate with role owner'
-        if ($hasTl1 -and $isBundle) { $rec = 'Split: move TL1 roles to direct eligible assignment or a single-purpose TL1 group (HLD 7.6.1)' }
+        if (@($roles | Where-Object { $_.Role -eq 'Global Administrator' }).Count -gt 0) { $rec = 'Remove Global Administrator (assign it directly to named CLADs only)' + $(if ($isBundle) { '; split the other TL1 roles out to direct eligible or single-purpose groups (HLD 7.6.1)' } else { '' }) }
+        elseif ($hasTl1 -and $isBundle) { $rec = 'Split: move TL1 roles to direct eligible assignment or a single-purpose TL1 group (HLD 7.6.1)' }
         elseif ($isBundle -and $distinctLevels.Count -gt 1) { $rec = 'Rebuild bundle so it holds one trust level only (runbook 4.2)' }
         elseif ($hasTl1) { $rec = 'Single-purpose TL1 group: keep only if membership is small and owned' }
         $null = $groupBundles.Add([pscustomobject]@{
@@ -879,6 +880,155 @@ function Invoke-PimPhase2Assessment {
     }
     $catalogueRows = @($catalogueRows | Sort-Object @{ Expression = { Get-P2TlRank -Level $_.TrustLevel }; Descending = $true }, Plane, Role, ScopeLevel)
 
+    # ---- CLAD provisioning: every person doing admin work from an everyday or guest account needs a CLAD ----
+    $cladUpnPrefix = if ($idRules.CladUpnPrefixes) { [string]@($idRules.CladUpnPrefixes)[0] } else { 'clad_' }
+    $cladFormat = if ($idRules.CladDisplayNameFormat) { [string]$idRules.CladDisplayNameFormat } else { '(Cloud Admin) {First} {Last}' }
+    $existingClads = @($ident.Values | Where-Object { $_.AccountType -eq 'CLAD' -and $_.Upn })
+    $cladDomain = if ($idRules.CladUpnDomain) { [string]$idRules.CladUpnDomain } else {
+        $d = @($existingClads | ForEach-Object { ([string]$_.Upn).Split('@')[-1].ToLowerInvariant() } | Group-Object | Sort-Object Count -Descending | Select-Object -First 1)
+        if ($d.Count -gt 0) { $d[0].Name } elseif ($tenantDetails -and $tenantDetails.PrimaryDomain) { [string]$tenantDetails.PrimaryDomain } else { 'tenant.onmicrosoft.com' }
+    }
+    $takenLocal = @{}
+    foreach ($c in $existingClads) { $takenLocal[(([string]$c.Upn).Split('@')[0]).ToLowerInvariant()] = $c }
+    $cladByPerson = @{}
+    foreach ($c in $existingClads + @($ident.Values | Where-Object { $_.AccountType -eq 'CLAD' -and -not $_.Upn })) { if ($c.PersonKey -and -not $cladByPerson.ContainsKey($c.PersonKey)) { $cladByPerson[$c.PersonKey] = $c } }
+    $approverIds = @{}
+    foreach ($ap in $approverProfiles) { if ($ap.UserId) { $approverIds[([string]$ap.UserId).ToLowerInvariant()] = $true } }
+
+    $splitName = {
+        param($Entry)
+        $first = $null; $last = $null
+        $dn = ([string]$Entry.DisplayName) -replace '\[[^\]]*\]', '' -replace '\([^)]*\)', ''
+        if ($dn -match '^\s*([^,]+),\s*(.+)$') { $last = $Matches[1]; $first = $Matches[2] }
+        else {
+            $tok = @($dn.Trim() -split '\s+' | Where-Object { $_ })
+            if ($tok.Count -ge 2) { $first = $tok[0]; $last = $tok[$tok.Count - 1] }
+        }
+        if ((-not $first -or -not $last) -and ([string]$Entry.Upn) -match '^([A-Za-z]+)\.([A-Za-z''-]+)[_@]') { $first = $Matches[1]; $last = $Matches[2] }
+        if (-not $first -or -not $last) { return $null }
+        $first = ($first.Trim() -split '\s+')[0]
+        $tc = (New-Object System.Globalization.CultureInfo('en-GB')).TextInfo
+        return [pscustomobject]@{
+            First = $first.Trim(); Last = $last.Trim()
+            FirstKey = ($first.ToLowerInvariant() -replace '[^a-z]', ''); LastKey = ($last.ToLowerInvariant() -replace '[^a-z]', '')
+            Display = ($cladFormat -replace '\{First\}', $first.Trim() -replace '\{Last\}', $last.Trim())
+        }
+    }
+
+    $cladRows = New-Object System.Collections.ArrayList
+    $candidates = @{}
+    foreach ($e in $ident.Values) {
+        if ($e.AccountType -notin @('Everyday', 'Guest')) { continue }
+        $routes = @($privPaths | Where-Object IdentityId -eq $e.Id)
+        $isApprover = $approverIds.ContainsKey($e.Id)
+        if ($routes.Count -eq 0 -and -not $isApprover) { continue }
+        $candidates[$e.Id] = [pscustomobject]@{ Entry = $e; Routes = $routes; IsApprover = $isApprover }
+    }
+    foreach ($cand in @($candidates.Values | Sort-Object { $_.Entry.DisplayName })) {
+        $e = $cand.Entry
+        $routes = @($cand.Routes)
+        $nm = & $splitName $e
+        $existing = $null; $match = 'None'
+        if ($e.PersonKey -and $cladByPerson.ContainsKey($e.PersonKey)) { $existing = $cladByPerson[$e.PersonKey]; $match = 'Same person' }
+        elseif ($nm -and $nm.LastKey) {
+            # Older CLADs sometimes shorten the surname (clad_braitd); treat a shared 5-letter surname stem plus the first initial as a probable match.
+            $stem = $nm.LastKey.Substring(0, [Math]::Min(5, $nm.LastKey.Length))
+            $hit = @($existingClads | Where-Object { $l = (([string]$_.Upn).Split('@')[0]).ToLowerInvariant(); $l.StartsWith($cladUpnPrefix.ToLowerInvariant() + $stem) -and $l.EndsWith($nm.FirstKey.Substring(0, 1)) })
+            if ($hit.Count -eq 1) { $existing = $hit[0]; $match = 'Naming pattern - confirm' }
+        }
+        $proposed = $null
+        if (-not $existing -and $nm -and $nm.LastKey -and $nm.FirstKey) {
+            for ($n = 1; $n -le $nm.FirstKey.Length; $n++) {
+                $local = ($cladUpnPrefix + $nm.LastKey + $nm.FirstKey.Substring(0, $n)).ToLowerInvariant()
+                if (-not $takenLocal.ContainsKey($local)) { $proposed = "$local@$cladDomain"; $takenLocal[$local] = $e; break }
+            }
+        }
+        $highest = Get-P2HighestTl -Levels @($routes | ForEach-Object { $_.TrustLevel })
+        $roleList = @($routes | ForEach-Object { if ($_.Plane -eq 'Azure') { "$($_.Role) @ $($_.Scope)" } else { $_.Role } } | Select-Object -Unique)
+        $orgType = if ($e.PersonKey -and $personOrg.ContainsKey($e.PersonKey)) { $personOrg[$e.PersonKey].Type } else { $e.OrganisationType }
+        $orgName = if ($e.PersonKey -and $personOrg.ContainsKey($e.PersonKey)) { $personOrg[$e.PersonKey].Name } else { $e.Organisation }
+        $notes = New-Object System.Collections.ArrayList
+        if ($cand.IsApprover) { $null = $notes.Add('Everyday account is a PIM approver: replace it in the approver group with an admin account (HLD 7.6.3)') }
+        if ($orgType -eq 'Supplier') { $null = $notes.Add('Supplier: CLAD only if agreed under OD-09, with sponsor and contract end date') }
+        if ($e.AccountType -eq 'Guest' -and $orgType -ne 'Supplier') { $null = $notes.Add('Guest everyday account: tenant CLAD per the agreed pattern (OD-09)') }
+        if (-not $existing -and -not $proposed) { $null = $notes.Add('Name could not be parsed: choose the CLAD name manually') }
+        if ($proposed) { $null = $notes.Add('Check the directory for an existing account of this name before creating') }
+        $action = if ($routes.Count -eq 0) { if ($existing) { 'Approver only: replace everyday account with existing CLAD' } else { 'Approver only: create CLAD' } }
+                  elseif ($existing) { 'Move rights to existing CLAD' } else { 'Create CLAD and move rights' }
+        $null = $cladRows.Add([pscustomobject]@{
+            Tenant              = $TenantShortName
+            Person              = & $personOf $e.Id
+            Organisation        = $orgName
+            OrganisationType    = $orgType
+            EverydayAccount     = if ($e.Upn) { $e.Upn } else { $e.DisplayName }
+            AccountType         = $e.AccountType
+            HighestTrustLevel   = $highest
+            Action              = $action
+            ExistingClad        = if ($existing) { if ($existing.Upn) { $existing.Upn } else { $existing.DisplayName } } else { $null }
+            ExistingCladMatch   = $match
+            ProposedCladUpn     = $proposed
+            ProposedDisplayName = if ($proposed -and $nm) { $nm.Display } else { $null }
+            RoutesToMove        = $routes.Count
+            TL1Routes           = @($routes | Where-Object TrustLevel -eq 'TL1').Count
+            PermanentRoutes     = @($routes | Where-Object Standing).Count
+            IsApprover          = $cand.IsApprover
+            RolesToMove         = (($roleList | Select-Object -First 25) -join '; ')
+            Notes               = ($notes -join ' | ')
+            EverydayObjectId    = $e.Id
+        })
+    }
+    $cladRows = @($cladRows | Sort-Object @{ Expression = { Get-P2TlRank -Level $_.HighestTrustLevel }; Descending = $true }, Action, Person)
+
+    # ---- Access review plan: every privileged role, PIM group and Azure subscription is reviewed on a trust-level cycle ----
+    $reviewCycle = @{ TL1 = 'Quarterly'; TL2 = 'Six-monthly'; TL3 = 'Annually' }
+    $reviewDays = @{ TL1 = 7; TL2 = 14; TL3 = 14 }
+    $reviewer = @{
+        TL1 = 'Named security reviewer who does not hold the role (not self-review); second stage: role owner'
+        TL2 = 'Service or role owner (not self-review)'
+        TL3 = 'Team lead or line manager'
+    }
+    $reviewSettings = 'Auto-apply results; remove access if not reviewed; justification required; reviewer recommendations on (inactive 30 days)'
+    $existingReviewText = @($accessReviews | ForEach-Object { "$($_.DisplayName) $($_.Description)" })
+    $findExisting = {
+        param($Name)
+        if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+        $hit = @($accessReviews | Where-Object { ([string]$_.DisplayName + ' ' + [string]$_.Description) -like "*$Name*" } | Select-Object -ExpandProperty DisplayName)
+        if ($hit.Count -gt 0) { return ($hit -join '; ') }
+        return $null
+    }
+    $reviewPlan = New-Object System.Collections.ArrayList
+    $addReview = {
+        param($Tl, $Target, $Type, $Scope, $People, $Notes)
+        if (-not $reviewCycle.ContainsKey([string]$Tl)) { return }
+        $null = $reviewPlan.Add([pscustomobject]@{
+            Tenant = $TenantShortName; TrustLevel = $Tl; Target = $Target; ReviewType = $Type; Scope = $Scope
+            People = $People; Frequency = $reviewCycle[$Tl]; DurationDays = $reviewDays[$Tl]; Reviewers = $reviewer[$Tl]
+            Settings = $reviewSettings; ExistingReview = & $findExisting ($Target -replace '^[^:]+:\s*', ''); Notes = $Notes
+        })
+    }
+    # Entra roles held directly (role reviews in PIM).
+    foreach ($g in @($privPaths | Where-Object { $_.Plane -eq 'Entra' -and $_.PathType -eq 'Direct' -and $_.AccountType -notin @('WorkloadIdentity', 'BreakGlass') } | Group-Object Role)) {
+        $tl = Get-P2HighestTl -Levels @($g.Group | ForEach-Object { $_.TrustLevel })
+        & $addReview $tl "Entra role: $($g.Name)" 'PIM access review of the Entra role (eligible and active assignments)' 'Direct assignments' @($g.Group | Select-Object -ExpandProperty Person -Unique).Count $(if ($g.Name -eq 'Global Administrator') { 'Break-glass accounts excluded and reviewed separately' } else { $null })
+    }
+    # Groups that hold roles (PIM for Groups membership reviews), at the level of the highest role they grant.
+    foreach ($b in $groupBundles) {
+        & $addReview $b.HighestTrustLevel "Group: $($b.Group)" 'Access review of group membership (PIM for Groups eligible and active members)' "Members; grants $($b.Roles) role(s)" $b.People $(if ([int]$b.Roles -gt 1) { 'Review again once the group is rebuilt to a single trust level' } else { $null })
+    }
+    # Azure subscriptions with privileged human access.
+    foreach ($g in @($privPaths | Where-Object { $_.Plane -eq 'Azure' -and $_.AccountType -in @('CLAD', 'Other admin account', 'Everyday', 'Guest', 'Generic/Service') -and $_.TrustLevel -in @('TL1', 'TL2') -and $_.SubscriptionName } | Group-Object SubscriptionName)) {
+        $tl = Get-P2HighestTl -Levels @($g.Group | ForEach-Object { $_.TrustLevel })
+        & $addReview $tl "Azure subscription: $($g.Name)" 'PIM access review of Azure resource roles' 'Owner, User Access Administrator, Contributor and data-plane roles at subscription and below' @($g.Group | Select-Object -ExpandProperty Person -Unique).Count 'Needs PIM for Azure resources enabled on the subscription'
+    }
+    # Cross-cutting reviews.
+    $guestPeople = @($privPaths | Where-Object { $_.AccountType -eq 'Guest' -or $_.PersonOrganisationType -eq 'Supplier' } | Select-Object -ExpandProperty Person -Unique).Count
+    if ($guestPeople -gt 0) { & $addReview 'TL1' 'Guest and supplier accounts with admin rights' 'Access review of guest users in privileged groups and roles' 'All guest and supplier identities with any admin route' $guestPeople 'Reviewer: the named sponsor for each supplier; tie expiry to the contract' }
+    $cladCount = @($ident.Values | Where-Object AccountType -eq 'CLAD').Count
+    if ($cladCount -gt 0) { & $addReview 'TL2' 'All CLAD accounts' 'Access review of the CLAD account population (a dynamic group of admin accounts)' 'Every CLAD; flag CLADs whose everyday account is disabled or that have not signed in for 90 days' $cladCount 'Supports leaver removal (HLD F07)' }
+    $apprCount = @($approverProfiles | Where-Object UserId | Select-Object -ExpandProperty UserId -Unique).Count
+    if ($apprCount -gt 0) { & $addReview 'TL1' 'PIM approver groups' 'Access review of approver group membership' 'Approver groups for TL1 and TL2 roles' $apprCount 'Confirm approvers are admin accounts and not eligible for the roles they approve (HLD 7.6.3)' }
+    $reviewPlan = @($reviewPlan | Sort-Object @{ Expression = { Get-P2TlRank -Level $_.TrustLevel }; Descending = $true }, Target)
+
     # ---- Migration worksheet -------------------------------------------------------------------
     $bundleByGroup = @{}
     foreach ($b in $groupBundles) { $bundleByGroup[$b.GroupId] = $b }
@@ -891,7 +1041,7 @@ function Invoke-PimPhase2Assessment {
             'BreakGlass' { $null = $actions.Add('Retain: break-glass exception (HLD 7.13)') }
             'WorkloadIdentity' { $null = $actions.Add('Inventory only: non-human identity, out of Phase 2 scope (R15)') }
             'Generic/Service' { $null = $actions.Add('Replace with a named identity or workload identity, or record an exception (HLD 7.9, runbook 5.6)') }
-            'Everyday' { $null = $actions.Add("Move to the person's CLAD identity (SEC-PIM-08)") }
+            'Everyday' { $null = $actions.Add("Move to the person's CLAD account (see P2_CladProvisioning.csv; SEC-PIM-08)") }
             'Guest' { $null = $actions.Add('Confirm sponsor, organisation and expiry; decide guest vs tenant CLAD pattern (OD-09, runbook 5.6)') }
             'Unknown' { $null = $actions.Add('Identify the principal; remove if orphaned') }
             'Unresolved' { $null = $actions.Add('Principal could not be read: check the reviewing account can read directory objects, then re-run') }
@@ -900,6 +1050,9 @@ function Invoke-PimPhase2Assessment {
         }
         if ($e -and $e.AccountEnabled -eq $false) { $null = $actions.Add('Remove: account disabled') }
         if ($p.AccountType -notin @('BreakGlass', 'WorkloadIdentity')) {
+            if ($p.Plane -eq 'Entra' -and $p.Role -eq 'Global Administrator' -and $p.PathType -ne 'Direct') {
+                $null = $actions.Add('Global Administrator is never group-assigned: assign it directly as eligible to the named CLAD (if in the agreed population) and remove it from the group')
+            }
             if ($p.Standing -and $tlb -and $tlb.PermanentActiveAllowed -eq $false) {
                 if ($p.Plane -eq 'Azure') { $null = $actions.Add('Convert to eligible through PIM for Azure resources at the narrowest scope (HLD 7.11.4)') }
                 else { $null = $actions.Add('Convert standing access to eligible (SEC-PIM-03)') }
@@ -1042,6 +1195,11 @@ function Invoke-PimPhase2Assessment {
         DisabledWithAccess            = $disabled.Count
         UnresolvedPrincipals          = @($identityRows | Where-Object AccountType -eq 'Unresolved').Count
         DeletedIdentitiesWithAccess   = @($identityRows | Where-Object AccountType -eq 'Deleted identity').Count
+        AccessReviewsConfigured       = $accessReviews.Count
+        AccessReviewsPlanned          = $reviewPlan.Count
+        CladsToCreate                 = @($cladRows | Where-Object { $_.Action -like '*create CLAD*' }).Count
+        CladsExistingRightsToMove     = @($cladRows | Where-Object { $_.Action -like '*existing CLAD*' }).Count
+        GaPeopleViaGroup              = @($privPaths | Where-Object { $_.Plane -eq 'Entra' -and $_.Role -eq 'Global Administrator' -and $_.PathType -ne 'Direct' -and $_.AccountType -notin @('BreakGlass', 'WorkloadIdentity') } | Select-Object -ExpandProperty Person -Unique).Count
         OtherTenantPrincipals         = @($identityRows | Where-Object AccountType -eq 'Other tenant principal').Count
         WithoutP2                     = $noP2.Count
         TL1PolicyGaps                 = $tl1PolicyGaps.Count
@@ -1059,7 +1217,7 @@ function Invoke-PimPhase2Assessment {
         SelfApprovalTl1People = $selfApprovalTl1People; ApproverEveryday = $approverEveryday
         CaPolicies = $caPolicies; AccessReviews = $accessReviews; NoP2 = $noP2; HasLicences = ($licences.Count -gt 0)
         AzureAccess = $azAccess; AzStandingTl1 = $azStandingTl1; AzRoot = $azRoot
-        AzLighthouse = $azLighthouse; AzCoverageGaps = $azCoverageGaps
+        AzLighthouse = $azLighthouse; AzCoverageGaps = $azCoverageGaps; CladRows = @($cladRows); ReviewPlan = @($reviewPlan)
     }
     foreach ($row in @($audit.Controls) + @($audit.Caf) + @($audit.Ssa) + @($audit.CoverageEntra) + @($audit.CoverageAzure) + @($audit.Oversubscribed)) {
         if ($row) { Add-Member -InputObject $row -NotePropertyName Tenant -NotePropertyValue $TenantShortName -Force }
@@ -1084,6 +1242,8 @@ function Invoke-PimPhase2Assessment {
     Export-PimData -Data $standing -CsvPath (Join-Path $OutputFolder 'P2_StandingAccess.csv')
     Export-PimData -Data @($policyGaps) -CsvPath (Join-Path $OutputFolder 'P2_PolicyGaps.csv')
     Export-PimData -Data $migration -CsvPath (Join-Path $OutputFolder 'P2_MigrationWorksheet.csv')
+    Export-PimData -Data @($cladRows) -CsvPath (Join-Path $OutputFolder 'P2_CladProvisioning.csv')
+    Export-PimData -Data @($reviewPlan) -CsvPath (Join-Path $OutputFolder 'P2_AccessReviewPlan.csv')
     Export-PimData -Data @($exceptions) -CsvPath (Join-Path $OutputFolder 'P2_ExceptionCandidates.csv')
     Export-PimData -Data $hld -CsvPath (Join-Path $OutputFolder 'P2_HldFindings.csv')
     Export-PimData -Data $maturity -CsvPath (Join-Path $OutputFolder 'P2_Maturity.csv')
@@ -1107,6 +1267,9 @@ function Invoke-PimPhase2Assessment {
         Exceptions      = @($exceptions)
         Migration       = $migration
         Audit           = $audit
+        CladRows        = @($cladRows)
+        ReviewPlan      = @($reviewPlan)
+        AccessReviews   = @($accessReviews)
         PrivPathsHuman  = @($privPaths | Where-Object { $_.AccountType -in @('CLAD', 'Other admin account', 'Everyday', 'Guest', 'Generic/Service') })
         Identity        = $ident
         HasEntra        = $hasEntra
