@@ -486,6 +486,10 @@ function Invoke-PimPhase2Assessment {
             EndDateTime     = $End
             IdentityId      = $k
             ViaGroupId      = $ViaGroupId
+            AzureScope      = $null
+            AzureFamily     = $null
+            AssignmentType  = $null
+            SubscriptionName = $null
         }
         if ($Extra) { foreach ($x in $Extra.Keys) { $row[$x] = $Extra[$x] } }
         $null = $paths.Add([pscustomobject]$row)

@@ -336,6 +336,15 @@ The audit classifies every role by the Trust Level model: TL1 Strategic Control 
 
 `Privileged_Access_Audit_<tenant>.html` is written for a non-specialist reader. It opens with a plain-English verdict and headline numbers, lists the controls that are working well and those that need attention (each with why it matters, what good looks like and the recommended action), and benchmarks the tenant against the NCSC Cyber Assessment Framework (CAF 4.0, Principle B2: identity and access control) and the NCSC secure system administration principles. CAF ratings are indicative: they use configuration evidence only, so indicators that need process evidence (monitoring, review records, joiners/movers/leavers) are marked Not assessed.
 
+### Word report on your own template
+
+`tools/new_audit_word_report.py` writes the same audit as a Word document on an existing branded template (for example the PIM Phase 2 HLD): it keeps the template's page setup, styles, logo header and footer, and replaces the body with the audit (cover, executive summary, trust level position, strengths, findings, PIM usage, over-subscribed roles, risk areas, NCSC benchmark, HLD alignment, recommended plan and appendices). Individuals are not named in the document; named detail stays in the CSV evidence. Needs Python 3 with `python-docx` and `matplotlib`. The template is client material and is not stored in this repository.
+
+```bash
+python3 tools/new_audit_word_report.py --phase2 Output/SE/Run-.../Phase2 --azure-raw Output/SE/Run-.../Azure/Raw \
+    --template "PIM Phase2 - HLD.docx" --out "Privileged Access Audit - SE.docx" --tenant-name "Scottish Enterprise"
+```
+
 ### Running it on its own
 
 ```powershell
