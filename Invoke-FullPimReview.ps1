@@ -38,6 +38,7 @@ param(
     [switch]$InstallImportExcelIfMissing,
     [switch]$PromptToInstallImportExcel,
     [switch]$DisableTranscript,
+    [switch]$ForceReConnect,
     [switch]$IncludeAzureRbac,
     [string[]]$AzureSubscriptionId,
     [switch]$IncludeAzureResourceLevelAccess,

@@ -18,6 +18,22 @@ It produces:
 
 The implementation is read-only and idempotent for reporting.
 
+## Quick Start: full PIM audit in one command
+
+```powershell
+# One tenant
+pwsh ./Start-PimAudit.ps1 -TenantId contoso.onmicrosoft.com
+
+# Several tenants, with short names for the reports; builds the partnership roll-up at the end
+pwsh ./Start-PimAudit.ps1 -TenantId tenant1.onmicrosoft.com, tenant2.onmicrosoft.com -TenantShortName T1, T2
+```
+
+`Start-PimAudit.ps1` checks and installs the modules it needs, then for each tenant runs everything with every option on: the Entra PIM review, the Azure RBAC review and the PIM Phase 2 assessment. You sign in twice per tenant (Microsoft Graph, then Azure). Use an account with Global Reader in Entra and Reader at the tenant root management group in Azure. When it finishes it lists the reports and opens the Phase 2 assessment (or the partnership roll-up when there is more than one tenant).
+
+Options: `-SkipAzure` (Entra only), `-IncludeResourceLevelAccess` (also list access on individual Azure resources; slower), `-UseDeviceCode` (Azure device-code sign-in), `-NoOpen`. A failed tenant does not stop the others.
+
+Settings come from `Config/pim-review.config.local.json` when it exists (git-ignored), otherwise `Config/pim-review.config.json`; the tenant in the config is ignored in favour of `-TenantId`.
+
 ## Folder Structure
 
 - `Modules/PimReview.Common.psm1`
@@ -33,6 +49,7 @@ The implementation is read-only and idempotent for reporting.
 - `Get-AzureRbacReview.ps1` (Azure RBAC review; runs on its own or from `Invoke-FullPimReview.ps1`)
 - `Get-AzureRbacInsights.ps1` (Azure review collectors: sign-in, Activity Log, Lighthouse, Key Vault/storage/SQL/AKS, workload credentials)
 - `New-AzureRbacReport.ps1` (Azure review HTML/Markdown report)
+- `Start-PimAudit.ps1` (one command: full Entra, Azure and Phase 2 audit for one or more tenants)
 - `Invoke-FullPimReview.ps1`
 - `Invoke-PimPhase2Assessment.ps1` (PIM Phase 2 assessment over a tenant's Entra and Azure exports; runs offline)
 - `New-PimPhase2Report.ps1` (Phase 2 HTML report)
