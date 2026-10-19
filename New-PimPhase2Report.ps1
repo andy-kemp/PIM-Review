@@ -11,7 +11,8 @@ function ConvertTo-P2Label {
         HasP2Licence = 'P2 licence'; HasFido2 = 'FIDO2'; MeetsHld763 = 'Meets HLD 7.6.3'; HldBaseline = 'HLD baseline'; Phase2Target = 'Phase 2 target'
         HldReference = 'HLD reference'; ApproversAlsoEligible = 'Approvers also eligible'; SelfApprovalPeople = 'Self-approval people'
         JustInTime = 'Just-in-time'; TimeBound = 'Time-bound active'; PimStatus = 'PIM status'; TimesGuide = 'x guide'; CafOutcome = 'CAF'; NcscPrinciple = 'NCSC SSA'
-        PersonOrganisation = 'Organisation'
+        PersonOrganisation = 'Organisation'; AdminAccounts = 'Admin accounts (CLAD)'; EverydayOrGuest = 'Everyday or guest accounts'
+        SharedAccounts = 'Shared / service accounts'; PhishingResistant = 'Phishing-resistant MFA'; WithPermanentAccess = 'With any permanent admin access'
     }
     if ($map.ContainsKey($Name)) { return $map[$Name] }
     $Name = $Name -creplace 'TL([1-4])', ' TL$1 ' -creplace 'P2', ' P2 '
@@ -158,7 +159,7 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
     $null = $html.Append('<div class="cover">')
     $null = $html.Append("<div class=""kicker"">$(& $enc $programme)</div>")
     $null = $html.Append("<h1>Privileged Access Audit: $(& $enc $Data.TenantName)</h1>")
-    $null = $html.Append('<div class="meta">Entra ID and Azure administrative access, PIM usage and controls, benchmarked against the NCSC Cyber Assessment Framework (CAF 4.0, Principle B2) and Microsoft guidance.</div>')
+    $null = $html.Append('<div class="meta">Entra ID and Azure administrative access measured against the Trust Level model (TL1 Strategic Control to TL4 Workforce), PIM usage and controls, benchmarked against the NCSC Cyber Assessment Framework (CAF 4.0, Principle B2) and Microsoft guidance.</div>')
     $null = $html.Append("<div class=""meta"">Evidence: Entra run $(& $enc $(if ($Data.EntraRun) { $Data.EntraRun } else { 'not supplied' })) &middot; Azure run $(& $enc $(if ($Data.AzureRun) { $Data.AzureRun } else { 'not supplied' })) &middot; Prepared by $(& $enc $preparedBy) &middot; $(Get-Date -Format 'd MMMM yyyy') &middot; $(& $enc $classification)</div>")
     $null = $html.Append('</div>')
 
@@ -180,7 +181,7 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
     # ---- 1. At a glance -----------------------------------------------------------------------
     $null = $html.Append('<h2 id="glance">At a glance</h2>')
     $top = @($weak | Where-Object { $_.Result -eq 'Weak' -and $_.Gap } | Select-Object -First 4 | ForEach-Object { $_.Gap })
-    $topGood = @($good | Select-Object -First 3 | ForEach-Object { $t = [string]$_.Control; if ($t -match '^(Tier|Global|Azure|Entra|Conditional|PIM|Microsoft)\b') { $t } else { $t.Substring(0, 1).ToLower() + $t.Substring(1) } })
+    $topGood = @($good | Select-Object -First 3 | ForEach-Object { $t = [string]$_.Control; if ($t -match '^(Tier|Global|Azure|Entra|Conditional|PIM|Microsoft|TL\d)\b') { $t } else { $t.Substring(0, 1).ToLower() + $t.Substring(1) } })
     $verdict = "Of $($controls.Count - @($controls | Where-Object Result -eq 'Not assessed').Count) controls checked, <strong>$nGood are in place</strong>, $nPart are partly in place and <strong>$nWeak are weak</strong>."
     if ($topGood.Count -gt 0) { $verdict += ' On the positive side: ' + (& $enc ($topGood -join '; ')) + '.' }
     if ($top.Count -gt 0) { $verdict += ' The most important gaps are that ' + (& $enc ($top -join '; ')) + '.' }
@@ -201,12 +202,34 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
     $null = $html.Append((& $tile $peopleN 'People with admin access (Entra or Azure)' '' $null))
     $ga = [int]$m.PeopleReachingGlobalAdmin
     $null = $html.Append((& $tile $ga 'People who can become Global Administrator' $(if ($ga -lt 5) { 'good' } else { 'weak' }) 'Microsoft guide: fewer than 5'))
-    $null = $html.Append((& $tile $m.PeopleWithTL1 'People who can reach Tier 0 (TL1)' '' $null))
+    $null = $html.Append((& $tile $m.PeopleWithTL1 'People who can reach TL1 (Strategic Control)' '' $null))
     if ($null -ne $pctE) { $null = $html.Append((& $tile "$pctE%" 'Entra admin access that is just-in-time (PIM)' $(if ($pctE -ge 90) { 'good' } elseif ($pctE -ge 60) { 'part' } else { 'weak' }) 'Target: all, except break-glass')) }
     if ($null -ne $pctA) { $null = $html.Append((& $tile "$pctA%" 'Azure write access that is just-in-time (PIM)' $(if ($pctA -ge 90) { 'good' } elseif ($pctA -ge 50) { 'part' } else { 'weak' }) 'Target: all write access')) }
     $null = $html.Append((& $tile $m.SelfApprovalPeople 'People who can approve their own elevation' $(if ([int]$m.SelfApprovalPeople -eq 0) { 'good' } else { 'weak' }) 'Target: none'))
-    $null = $html.Append((& $tile $m.StandingTL1Paths 'Permanent Tier 0 routes held by people' $(if ([int]$m.StandingTL1Paths -eq 0) { 'good' } else { 'weak' }) 'Target: none'))
+    $null = $html.Append((& $tile $m.StandingTL1Paths 'Permanent TL1 routes held by people' $(if ([int]$m.StandingTL1Paths -eq 0) { 'good' } else { 'weak' }) 'Target: none'))
     $null = $html.Append('</div>')
+
+    # People by highest trust level, with the TL controls that matter most.
+    $tlNames = @{ TL1 = 'Strategic Control'; TL2 = 'Service Administration'; TL3 = 'Operational Administration' }
+    $humanIds = @($Data.Identities | Where-Object { $_.AccountType -in $humanTypes })
+    $tlRows = foreach ($tl in @('TL1', 'TL2', 'TL3')) {
+        $g = @($humanIds | Where-Object HighestTrustLevel -eq $tl)
+        if ($g.Count -eq 0) { continue }
+        $known = @($g | Where-Object { [string]$_.PhishingResistant -in @('True', 'False') })
+        $pr = @($known | Where-Object { [string]$_.PhishingResistant -eq 'True' }).Count
+        [pscustomobject]@{
+            TrustLevel = $tl; Name = $tlNames[$tl]; Identities = $g.Count
+            AdminAccounts = @($g | Where-Object { $_.AccountType -in @('CLAD', 'Other admin account') }).Count
+            EverydayOrGuest = @($g | Where-Object { $_.AccountType -in @('Everyday', 'Guest') }).Count
+            SharedAccounts = @($g | Where-Object AccountType -eq 'Generic/Service').Count
+            PhishingResistant = if ($known.Count) { "$([int][Math]::Round(100 * $pr / $known.Count))%" } else { 'n/a' }
+            WithPermanentAccess = @($g | Where-Object { [int]$_.StandingPaths -gt 0 }).Count
+        }
+    }
+    if (@($tlRows).Count -gt 0) {
+        $null = $html.Append('<h3>Admin identities by trust level</h3><p class="more">Each identity is counted once, at the highest trust level it can reach. TL1 expects dedicated admin accounts, FIDO2 keys and no permanent access.</p>')
+        $null = $html.Append((ConvertTo-P2HtmlTable -Rows @($tlRows) -Columns @('TrustLevel', 'Name', 'Identities', 'AdminAccounts', 'EverydayOrGuest', 'SharedAccounts', 'PhishingResistant', 'WithPermanentAccess')))
+    }
 
     $gaps = @($Data.AzCoverageGaps)
     if ($gaps.Count -gt 0) {
@@ -346,7 +369,7 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
             Groups = (@($g | Where-Object ViaGroup | Select-Object -ExpandProperty ViaGroup -Unique | Select-Object -First 5) -join '; ')
         }
     } | Sort-Object People -Descending)
-    $null = $html.Append((& $det "Routes to Tier 0 (TL1) roles: $($tl1ByRole.Count) roles" (ConvertTo-P2HtmlTable -Rows $tl1ByRole -Columns @('Plane', 'Role', 'People', 'Direct', 'ViaGroup', 'Eligible', 'Permanent', 'Groups') -MaxRows 80 -CsvName 'P2_TL1Paths.csv') $false))
+    $null = $html.Append((& $det "Routes to TL1 roles: $($tl1ByRole.Count) roles" (ConvertTo-P2HtmlTable -Rows $tl1ByRole -Columns @('Plane', 'Role', 'People', 'Direct', 'ViaGroup', 'Eligible', 'Permanent', 'Groups') -MaxRows 80 -CsvName 'P2_TL1Paths.csv') $false))
     $null = $html.Append((& $det "Groups that bundle roles: $(@($Data.Bundles).Count)" (ConvertTo-P2HtmlTable -Rows $Data.Bundles -Columns @('Group', 'HighestTrustLevel', 'Roles', 'TL1Roles', 'TL2Roles', 'TL3Roles', 'People', 'Recommendation') -MaxRows 60 -CsvName 'P2_GroupBundles.csv') $false))
     $standingPeople = @($Data.Standing | Where-Object { $_.AccountType -in $humanTypes })
     $null = $html.Append((& $det "Permanent admin access held by people: $($standingPeople.Count) routes" (ConvertTo-P2HtmlTable -Rows $standingPeople -Columns @('TrustLevel', 'Plane', 'Identity', 'AccountType', 'PersonOrganisation', 'Role', 'Scope', 'PathType', 'ViaGroup') -MaxRows 120 -CsvName 'P2_StandingAccess.csv') $false))
@@ -378,11 +401,12 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
 
     # ---- 9. Method ----------------------------------------------------------------------------
     $null = $html.Append('<h2 id="method">How to read this report</h2>')
-    $null = $html.Append('<h3>Trust levels</h3><div class="tw"><table><thead><tr><th>Level</th><th>Meaning</th><th>Examples</th><th>Expected controls</th></tr></thead><tbody>')
-    $null = $html.Append('<tr><td><span class="b tl1">TL1</span></td><td>Tier 0: can take over the tenant or grant itself any access</td><td>Global Administrator, Privileged Role Administrator, Azure Owner at subscription or above</td><td>Eligible only, approval by independent approvers, 2 hours, phishing-resistant MFA, quarterly review</td></tr>')
-    $null = $html.Append('<tr><td><span class="b tl2">TL2</span></td><td>High impact on a service or large amounts of data</td><td>Exchange, SharePoint, Intune Administrator, Azure Contributor at subscription</td><td>Eligible, MFA, 4 hours, approval by impact, six-monthly review</td></tr>')
-    $null = $html.Append('<tr><td><span class="b tl3">TL3</span></td><td>Limited operational administration</td><td>Helpdesk, reports, resource-level contributor</td><td>Eligible, MFA, 8 hours, annual review</td></tr>')
-    $null = $html.Append('<tr><td><span class="b tl4">TL4</span></td><td>Read only</td><td>Global Reader, Azure Reader</td><td>May be permanent</td></tr>')
+    $null = $html.Append('<h3>Trust levels</h3><p>The audit uses the Trust Level model: identities and roles are grouped by the impact if they were compromised, and the controls required rise with that impact. TL1 is the cloud-era counterpart of Tier 0: it protects the tenant control plane rather than a set of servers. See <a href="https://www.andykemp.com/2026/07/29/from-tier-0-to-trust-levels-rethinking-privileged-access-for-the-cloud-era/">From Tier 0 to Trust Levels</a>.</p>')
+    $null = $html.Append('<div class="tw"><table><thead><tr><th>Level</th><th>Meaning</th><th>Examples</th><th>Expected controls</th></tr></thead><tbody>')
+    $null = $html.Append('<tr><td><span class="b tl1">TL1</span> Strategic Control</td><td>Controls the tenant control plane: compromise could mean losing control of the whole tenant</td><td>Global Administrator, Privileged Role Administrator, Conditional Access Administrator, Authentication Policy Administrator; Azure Owner or User Access Administrator at subscription scope or above</td><td>Eligible only, direct or single-purpose group; FIDO2 security key; privileged access workstation; independent peer approval; justification; 2-hour activation; continuous monitoring; quarterly review</td></tr>')
+    $null = $html.Append('<tr><td><span class="b tl2">TL2</span> Service Administration</td><td>Administers a critical service within its own boundary, not the tenant itself</td><td>Exchange, SharePoint, Teams, Intune, Power Platform administrators; Azure Contributor at subscription</td><td>Eligible; passkey or FIDO2; approval by impact; 4-hour activation; six-monthly review</td></tr>')
+    $null = $html.Append('<tr><td><span class="b tl3">TL3</span> Operational Administration</td><td>Supports users and routine administration</td><td>Helpdesk, user and group administration, resource-level contributor</td><td>Eligible; phishing-resistant or strong MFA; no or light approval; 8-hour activation; annual review</td></tr>')
+    $null = $html.Append('<tr><td><span class="b tl4">TL4</span> Workforce</td><td>Everyday identities with no privileged role; low-impact read-only roles may sit here</td><td>Standard users; Reader where data is not sensitive</td><td>Workforce MFA or passkeys, compliant devices, Zero Trust baseline</td></tr>')
     $null = $html.Append('</tbody></table></div>')
     $null = $html.Append('<h3>Terms</h3><ul>')
     $null = $html.Append('<li><strong>Route</strong>: one way a person reaches a role, for example directly, or by being a member (or eligible member) of a group that holds the role.</li>')

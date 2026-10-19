@@ -37,15 +37,15 @@ function Get-PimAuditControls {
     # Short wording of each control when it is not met, used in the summary verdict.
     $gapText = @{
         'ADM-01' = 'too many people can become Global Administrator'; 'ADM-02' = 'Global Administrator is held permanently'; 'ADM-03' = 'no break-glass accounts were found'
-        'PIM-01' = 'some Tier 0 Entra access is permanent'; 'PIM-02' = 'many Entra admin roles are held permanently'; 'PIM-03' = 'Azure write access is mostly permanent (no PIM)'
-        'PIM-04' = 'Tier 0 roles are bundled with routine roles in the same groups'; 'PIM-05' = 'some Tier 0 roles activate without approval'; 'PIM-06' = 'people can approve their own elevation'
-        'PIM-07' = 'some Tier 0 activations last too long'; 'PIM-08' = 'some admin roles activate without MFA'; 'PIM-09' = 'some activations need no justification'
-        'PIM-10' = 'Tier 0 activation does not enforce phishing-resistant sign-in'; 'PIM-11' = 'eligibility never expires'
-        'ID-01' = 'everyday and guest accounts hold admin rights'; 'ID-02' = 'admin accounts have email and Office licences'; 'ID-03' = 'few Tier 0 admins use phishing-resistant MFA'
+        'PIM-01' = 'some TL1 Entra access is permanent'; 'PIM-02' = 'many Entra admin roles are held permanently'; 'PIM-03' = 'Azure write access is mostly permanent (no PIM)'
+        'PIM-04' = 'TL1 roles are bundled with routine roles in the same groups'; 'PIM-05' = 'some TL1 roles activate without approval'; 'PIM-06' = 'people can approve their own elevation'
+        'PIM-07' = 'some TL1 activations last too long'; 'PIM-08' = 'some admin roles activate without MFA'; 'PIM-09' = 'some activations need no justification'
+        'PIM-10' = 'TL1 activation does not enforce phishing-resistant sign-in'; 'PIM-11' = 'eligibility never expires'
+        'ID-01' = 'everyday and guest accounts hold admin rights'; 'ID-02' = 'admin accounts have email and Office licences'; 'ID-03' = 'few TL1 admins use phishing-resistant MFA'
         'ID-04' = 'no Conditional Access MFA policy targets admin roles'; 'ID-05' = 'shared and service user accounts hold admin rights'; 'ID-06' = 'supplier and guest admin access is permanent'
         'ID-07' = 'disabled accounts still hold access'; 'ID-08' = 'some assignments belong to deleted identities'; 'DEV-01' = 'admin access is not limited to trusted admin devices'
         'GOV-01' = 'privileged access is not reviewed regularly'; 'GOV-02' = 'some privileged users are not licensed for PIM'
-        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'Tier 0 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'AZ-04' = 'other organisations have permanent write access to Azure through Lighthouse'; 'WL-01' = 'automation accounts hold Tier 0 rights'
+        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'TL1 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'AZ-04' = 'other organisations have permanent write access to Azure through Lighthouse'; 'WL-01' = 'automation accounts hold TL1 rights'
     }
     $controls = New-Object System.Collections.ArrayList
     $add = {
@@ -113,7 +113,7 @@ function Get-PimAuditControls {
         $elig = @($t1 | Where-Object EffectiveState -eq 'Eligible').Count
         $pct = Get-PimAuditPercent $elig $t1.Count
         $res = if ($null -eq $pct -or $pct -ge 95) { 'Good' } elseif ($pct -ge 70) { 'Partial' } else { 'Weak' }
-        & $add 'PIM-01' 'Just-in-time access' 'Tier 0 (TL1) Entra roles are only available just-in-time' $res 'High' `
+        & $add 'PIM-01' 'Just-in-time access' 'TL1 (Strategic Control) Entra roles are only available just-in-time' $res 'High' `
             "$pct% of routes to TL1 Entra roles need activation in PIM ($elig of $($t1.Count)); the rest are always on." `
             'TL1 roles can take over the tenant. Standing access means the privilege is exposed all the time, not just when someone is working.' `
             'All TL1 access is eligible and time-bound; nobody except break-glass holds it permanently.' `
@@ -151,9 +151,9 @@ function Get-PimAuditControls {
 
     if ($hasEntra) {
         $bundles = @($Ctx.Tl1InBundles)
-        & $add 'PIM-04' 'Just-in-time access' 'Tier 0 roles are not bundled with everyday admin roles' $(if ($bundles.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
-            $(if ($bundles.Count -eq 0) { 'No group hands out a TL1 role together with other roles.' } else { "$(& $pl $bundles.Count 'group gives' 'groups give') TL1 roles together with other roles, so one activation grants Tier 0 alongside routine roles. Largest: $(@($bundles | Sort-Object Roles -Descending | Select-Object -First 1 | ForEach-Object { "$($_.Group) ($($_.Roles) roles)" }) -join '')." }) `
-            'When Global Administrator or similar sits in the same group as routine roles, people activate Tier 0 for everyday tasks, and the role cannot be governed on its own.' `
+        & $add 'PIM-04' 'Just-in-time access' 'TL1 roles are not bundled with everyday admin roles' $(if ($bundles.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
+            $(if ($bundles.Count -eq 0) { 'No group hands out a TL1 role together with other roles.' } else { "$(& $pl $bundles.Count 'group gives' 'groups give') TL1 roles together with other roles, so one activation grants TL1 alongside routine roles. Largest: $(@($bundles | Sort-Object Roles -Descending | Select-Object -First 1 | ForEach-Object { "$($_.Group) ($($_.Roles) roles)" }) -join '')." }) `
+            'When Global Administrator or similar sits in the same group as routine roles, people activate TL1 for everyday tasks, and the role cannot be governed on its own.' `
             'TL1 roles assigned directly as eligible, or through a single-purpose group, with their own approval and activation settings.' `
             'Move TL1 roles out of the operational groups listed in Group bundles.' `
             'B2.c' 'SSA 3' 'NCSC: risk manage administration using tiers' 'P2_GroupBundles.csv'
@@ -161,9 +161,9 @@ function Get-PimAuditControls {
         if ($tl1Policies.Count -gt 0) {
             $withAppr = @($tl1Policies | Where-Object { $_.Policy.ApprovalRequired -eq $true }).Count
             $res = if ($withAppr -eq $tl1Policies.Count) { 'Good' } elseif ($withAppr -gt 0) { 'Partial' } else { 'Weak' }
-            & $add 'PIM-05' 'Activation controls' 'Activating a Tier 0 role needs approval' $res 'High' `
+            & $add 'PIM-05' 'Activation controls' 'Activating a TL1 role needs approval' $res 'High' `
                 "$withAppr of $($tl1Policies.Count) TL1 roles in use require approval to activate." `
-                'Approval is the check that a second person agrees Tier 0 is needed now.' `
+                'Approval is the check that a second person agrees TL1 access is needed now.' `
                 'Every TL1 role requires approval from an independent approver group.' `
                 'Turn on approval for the remaining TL1 roles (see PIM settings).' `
                 'B2.c' 'SSA 4' '' 'P2_PolicyGaps.csv'
@@ -182,7 +182,7 @@ function Get-PimAuditControls {
         if ($tl1Policies.Count -gt 0) {
             $maxH = [double]$baselines.TL1.MaxActivationHours
             $over = @($tl1Policies | Where-Object { $_.Policy.MaxActivationHours -and $_.Policy.MaxActivationHours -gt $maxH })
-            & $add 'PIM-07' 'Activation controls' "Tier 0 activations are short (no more than $maxH hours)" $(if ($over.Count -eq 0) { 'Good' } else { 'Partial' }) 'Medium' `
+            & $add 'PIM-07' 'Activation controls' "TL1 activations are short (no more than $maxH hours)" $(if ($over.Count -eq 0) { 'Good' } else { 'Partial' }) 'Medium' `
                 $(if ($over.Count -eq 0) { "All $($tl1Policies.Count) TL1 roles limit activation to $maxH hours or less." } else { "$(& $pl $over.Count 'TL1 role allows' 'TL1 roles allow') activation for longer than $maxH hours: $(@($over | ForEach-Object { "$($_.Role) ($($_.Policy.MaxActivationHours)h)" } | Select-Object -First 6) -join ', ')." }) `
                 'The longer an activation lasts, the longer the privilege is exposed after the task is finished.' `
                 "TL1 activation of $maxH hours or less, TL2 four hours, TL3 eight hours." `
@@ -195,7 +195,7 @@ function Get-PimAuditControls {
             & $add 'PIM-08' 'Activation controls' 'Activating an admin role needs MFA' $(if ($noMfa.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
                 $(if ($noMfa.Count -eq 0) { "All $($rolePolicies.Count) TL1 and TL2 roles in use require MFA or an authentication context on activation." } else { "$(& $pl $noMfa.Count 'TL1/TL2 role does' 'TL1/TL2 roles do') not require MFA on activation: $(@($noMfa | Select-Object -ExpandProperty Role -First 6) -join ', ')." }) `
                 'MFA at activation stops an attacker using a stolen session to elevate.' `
-                'Every privileged role requires MFA (and for TL1 a phishing-resistant authentication context) on activation.' `
+                'Every privileged role requires MFA (and for TL1 an authentication context requiring a FIDO2 key) on activation.' `
                 'Turn on MFA on activation for the roles listed.' `
                 'B2.a, B2.c' 'SSA 2' 'NCSC CAF B2.c: MFA for all privileged access' 'P2_PolicyGaps.csv'
 
@@ -211,7 +211,7 @@ function Get-PimAuditControls {
         if ($tl1Policies.Count -gt 0) {
             $ctx1 = @($tl1Policies | Where-Object { $_.Policy.AuthContext }).Count
             $res = if ($ctx1 -eq $tl1Policies.Count) { 'Good' } elseif ($ctx1 -gt 0) { 'Partial' } else { 'Partial' }
-            & $add 'PIM-10' 'Activation controls' 'Tier 0 activation enforces phishing-resistant sign-in (authentication context)' $res 'Medium' `
+            & $add 'PIM-10' 'Activation controls' 'TL1 activation enforces phishing-resistant sign-in (authentication context)' $res 'Medium' `
                 "$ctx1 of $($tl1Policies.Count) TL1 roles bind activation to a Conditional Access authentication context." `
                 'An authentication context lets Conditional Access demand phishing-resistant MFA and a managed device at the moment of elevation, not just at sign-in.' `
                 'Every TL1 role uses an authentication context that requires phishing-resistant MFA and a compliant privileged device.' `
@@ -265,7 +265,7 @@ function Get-PimAuditControls {
             $pr = @($prKnown | Where-Object { [string]$_.PhishingResistant -eq 'True' }).Count
             $pct = Get-PimAuditPercent $pr $prKnown.Count
             $res = if ($pct -ge 90) { 'Good' } elseif ($pct -ge 50) { 'Partial' } else { 'Weak' }
-            & $add 'ID-03' 'Admin identities' 'Tier 0 admins use phishing-resistant MFA' $res 'High' `
+            & $add 'ID-03' 'Admin identities' 'TL1 admins use phishing-resistant MFA' $res 'High' `
                 "$pct% of identities that can reach TL1 have a phishing-resistant method registered ($pr of $($prKnown.Count))." `
                 'Push and SMS MFA can be phished or fatigued; phishing-resistant methods (FIDO2 keys, passkeys, Windows Hello, certificate) cannot be relayed.' `
                 'All TL1 identities use FIDO2 / passkeys, enforced by an authentication strength.' `
@@ -273,7 +273,7 @@ function Get-PimAuditControls {
                 'B2.a, B2.c' 'SSA 2' 'NCSC CAF B2.a: authentication follows up-to-date best practice' 'P2_PrivilegedIdentities.csv'
         }
         else {
-            & $add 'ID-03' 'Admin identities' 'Tier 0 admins use phishing-resistant MFA' 'Not assessed' '' 'Authentication method registration was not available.' '' '' 'Re-run with authentication strength collection.' 'B2.a, B2.c' 'SSA 2' '' ''
+            & $add 'ID-03' 'Admin identities' 'TL1 admins use phishing-resistant MFA' 'Not assessed' '' 'Authentication method registration was not available.' '' '' 'Re-run with authentication strength collection.' 'B2.a, B2.c' 'SSA 2' '' ''
         }
 
         $generic = @($humanIds | Where-Object AccountType -eq 'Generic/Service')
@@ -387,7 +387,7 @@ function Get-PimAuditControls {
             'B2.c' 'SSA 4' 'Microsoft Defender for Cloud: a maximum of 3 owners should be designated for subscriptions' 'AzureUserAccess.csv'
 
         $azStd = @($Ctx.AzStandingTl1)
-        & $add 'AZ-02' 'Azure' 'No standing Tier 0 access across subscriptions or management groups' $(if ($azStd.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
+        & $add 'AZ-02' 'Azure' 'No standing TL1 access across subscriptions or management groups' $(if ($azStd.Count -eq 0) { 'Good' } else { 'Weak' }) 'High' `
             $(if ($azStd.Count -eq 0) { 'Nobody holds TL1 Azure access permanently at subscription scope or above.' } else { "$(& $pl @(& $peopleOf $azStd).Count 'person holds' 'people hold') TL1 Azure access permanently at subscription scope or above ($($azStd.Count) routes)." }) `
             'TL1 at subscription or management group scope gives control of every resource beneath, including the ability to grant access.' `
             'TL1 Azure access is eligible through PIM and limited to the platform team.' `
@@ -425,9 +425,9 @@ function Get-PimAuditControls {
 
     $nonHuman = @($identities | Where-Object { $_.AccountType -eq 'WorkloadIdentity' -and $_.HighestTrustLevel -eq 'TL1' })
     if ($nonHuman.Count -gt 0) {
-        & $add 'WL-01' 'Workload identities' 'Automation accounts with Tier 0 rights are known and owned' 'Partial' 'Medium' `
+        & $add 'WL-01' 'Workload identities' 'Automation accounts with TL1 rights are known and owned' 'Partial' 'Medium' `
             "$(& $pl $nonHuman.Count 'workload identity holds' 'workload identities hold') TL1 rights. They cannot use PIM and are outside the scope of this phase." `
-            'Service principals and managed identities with Tier 0 rights are an attack path if their credentials or the resources hosting them are compromised.' `
+            'Service principals and managed identities with TL1 rights are an attack path if their credentials or the resources hosting them are compromised.' `
             'Each has a named owner, the narrowest role, credential hygiene and monitoring.' `
             'Record an owner for each and review whether the rights are needed.' `
             'B2.d' 'SSA 4' '' 'P2_PrivilegedIdentities.csv'

@@ -328,6 +328,10 @@ The Phase 2 assessment turns the Entra and Azure exports into the registers the 
 | `P2_OversubscribedRoles.csv` | People per high-impact role against a guide (Microsoft: Global Administrator fewer than 5, subscription owners at most 3; catalogue guide for other TL1/TL2 roles) |
 | `Privileged_Access_Audit_<tenant>.html` | The tenant report: at a glance, what is working well, what needs attention, NCSC benchmark, where PIM is and is not used, over-subscribed roles, detailed evidence |
 
+### Trust levels
+
+The audit classifies every role by the Trust Level model: TL1 Strategic Control (the tenant control plane, the cloud-era counterpart of Tier 0), TL2 Service Administration, TL3 Operational Administration and TL4 Workforce. Required controls rise with the level. See [From Tier 0 to Trust Levels](https://www.andykemp.com/2026/07/29/from-tier-0-to-trust-levels-rethinking-privileged-access-for-the-cloud-era/).
+
 ### The report
 
 `Privileged_Access_Audit_<tenant>.html` is written for a non-specialist reader. It opens with a plain-English verdict and headline numbers, lists the controls that are working well and those that need attention (each with why it matters, what good looks like and the recommended action), and benchmarks the tenant against the NCSC Cyber Assessment Framework (CAF 4.0, Principle B2: identity and access control) and the NCSC secure system administration principles. CAF ratings are indicative: they use configuration evidence only, so indicators that need process evidence (monitoring, review records, joiners/movers/leavers) are marked Not assessed.
