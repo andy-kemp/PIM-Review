@@ -134,6 +134,28 @@ else {
 if (-not $TenantId -or $TenantId.Count -eq 0) {
     if ([string]::IsNullOrWhiteSpace($TenantListPath)) { $TenantListPath = Join-Path $PSScriptRoot 'Config\audit-tenants.local.json' }
     $list = @()
+    if (-not (Test-Path $TenantListPath)) {
+        # First run: build the tenant list here and save it, so later runs only need -All or the menu.
+        Write-Host ''
+        Write-Host "No tenant list yet. Enter the tenants to audit; it is saved to $TenantListPath for next time." -ForegroundColor Cyan
+        Write-Host 'Leave the tenant ID empty when you have finished.'
+        $newList = New-Object System.Collections.ArrayList
+        while ($true) {
+            $tid = Read-Host "Tenant $($newList.Count + 1) - tenant ID or domain (for example contoso.onmicrosoft.com)"
+            if ([string]::IsNullOrWhiteSpace($tid)) { break }
+            $name = Read-Host '  Name (for example Contoso)'
+            $short = Read-Host '  Short name for reports (for example CON)'
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $tid.Trim() }
+            if ([string]::IsNullOrWhiteSpace($short)) { $short = ($name -replace '[^A-Za-z0-9]', '') }
+            $null = $newList.Add([pscustomobject]@{ Name = $name.Trim(); ShortName = $short.Trim(); TenantId = $tid.Trim() })
+        }
+        if ($newList.Count -eq 0) { throw 'No tenants entered.' }
+        $listDir = Split-Path -Path $TenantListPath -Parent
+        if (-not (Test-Path $listDir)) { $null = New-Item -ItemType Directory -Path $listDir -Force }
+        [pscustomobject]@{ _about = 'Tenants for Start-PimAudit.ps1. Local only (git-ignored). Edit freely.'; Tenants = @($newList) } | ConvertTo-Json -Depth 5 | Out-File -FilePath $TenantListPath -Encoding UTF8
+        Write-Host "Saved $($newList.Count) tenant(s) to $TenantListPath" -ForegroundColor Green
+        if (-not $All.IsPresent -and -not $Tenant) { $All = [switch]$true }
+    }
     if (Test-Path $TenantListPath) {
         $list = @((Get-Content -Path $TenantListPath -Raw | ConvertFrom-Json).Tenants | Where-Object { $_.TenantId -and $_.TenantId -notmatch '^<' })
     }
@@ -163,12 +185,8 @@ if (-not $TenantId -or $TenantId.Count -eq 0) {
         $TenantId = @($picked | ForEach-Object { [string]$_.TenantId })
         $TenantShortName = @($picked | ForEach-Object { if ($_.ShortName) { [string]$_.ShortName } else { [string]$_.Name } })
     }
-    elseif ($All.IsPresent -or $Tenant) {
-        throw "No tenant list found at $TenantListPath. Copy Config\audit-tenants.example.json to that name and fill it in, or pass -TenantId."
-    }
     else {
-        $entered = Read-Host 'Tenant ID or domain to audit (separate several with commas)'
-        $TenantId = @($entered.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        throw "The tenant list at $TenantListPath has no usable tenants (entries showing <...> are skipped). Edit it, or pass -TenantId."
     }
 }
 if (-not $TenantId -or $TenantId.Count -eq 0) { throw 'No tenant given.' }

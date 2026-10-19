@@ -20,7 +20,7 @@ The implementation is read-only and idempotent for reporting.
 
 ## Quick Start: full PIM audit in one command
 
-Double-click `Run-PimAudit.cmd` (or run `pwsh ./Start-PimAudit.ps1`). With a tenant list saved in `Config/audit-tenants.local.json` (copy `Config/audit-tenants.example.json`; the file is git-ignored) it shows a menu of tenants; otherwise it asks for a tenant ID or domain.
+Double-click `Run-PimAudit.cmd` (or run `pwsh ./Start-PimAudit.ps1`). The first time, it asks for your tenants and saves them to `Config/audit-tenants.local.json` (git-ignored); after that it shows a menu of them.
 
 ```powershell
 pwsh ./Start-PimAudit.ps1            # menu of tenants from the list
