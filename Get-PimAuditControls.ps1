@@ -45,7 +45,7 @@ function Get-PimAuditControls {
         'ID-04' = 'no Conditional Access MFA policy targets admin roles'; 'ID-05' = 'shared and service user accounts hold admin rights'; 'ID-06' = 'supplier and guest admin access is permanent'
         'ID-07' = 'disabled accounts still hold access'; 'ID-08' = 'some assignments belong to deleted identities'; 'DEV-01' = 'admin access is not limited to trusted admin devices'
         'GOV-01' = 'privileged access is not reviewed regularly'; 'GOV-02' = 'some privileged users are not licensed for PIM'
-        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'Tier 0 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'WL-01' = 'automation accounts hold Tier 0 rights'
+        'AZ-01' = 'subscriptions have more than three owners'; 'AZ-02' = 'Tier 0 Azure access is held permanently'; 'AZ-03' = 'there is access at the root management group'; 'AZ-04' = 'other organisations have permanent write access to Azure through Lighthouse'; 'WL-01' = 'automation accounts hold Tier 0 rights'
     }
     $controls = New-Object System.Collections.ArrayList
     $add = {
@@ -305,12 +305,16 @@ function Get-PimAuditControls {
             'Remove the assignments and add role removal to the leaver process.' `
             'B2.a, B2.d' 'SSA 4' 'NCSC CAF B2.d: rights do not stay active after users leave' 'P2_PrivilegedIdentities.csv'
 
+        $deleted = @($identities | Where-Object AccountType -eq 'Deleted identity')
         $unres = @($identities | Where-Object AccountType -eq 'Unresolved')
-        & $add 'ID-08' 'Access lifecycle' 'Every role assignment belongs to a known identity' $(if ($unres.Count -eq 0) { 'Good' } else { 'Partial' }) 'Low' `
-            $(if ($unres.Count -eq 0) { 'Every assignment resolves to a known user, group or workload identity.' } else { "$(& $pl $unres.Count 'assignment holder could' 'assignment holders could') not be resolved (normally deleted identities)." }) `
-            'Assignments to deleted identities are clutter that hides real access and can be re-used if an object is restored.' `
-            'No orphaned assignments.' `
-            'Re-run the Azure review with the current tool to confirm which are deleted, then remove them.' `
+        $parts = @()
+        if ($deleted.Count -gt 0) { $parts += "$(& $pl $deleted.Count 'deleted identity still holds' 'deleted identities still hold') privileged Azure role assignments" }
+        if ($unres.Count -gt 0) { $parts += "$(& $pl $unres.Count 'assignment holder' 'assignment holders') could not be read" }
+        & $add 'ID-08' 'Access lifecycle' 'Role assignments are removed when an identity is deleted' $(if ($deleted.Count + $unres.Count -eq 0) { 'Good' } else { 'Partial' }) 'Low' `
+            $(if ($parts.Count -eq 0) { 'Every assignment belongs to a current user, group or workload identity.' } else { ($parts -join '; ') + '.' }) `
+            'Orphaned assignments show that removal is not part of the leaver or decommissioning process. They clutter reviews and hide real access.' `
+            'Assignments are removed when the identity is deleted.' `
+            'Remove the orphaned assignments (listed in P2_PrivilegedIdentities.csv as Deleted identity) and add assignment clean-up to decommissioning.' `
             'B2.a, B2.d' 'SSA 4' '' 'P2_PrivilegedIdentities.csv'
     }
 
@@ -391,12 +395,32 @@ function Get-PimAuditControls {
             'B2.c' 'SSA 4' '' 'P2_StandingAccess.csv'
 
         $root = @($Ctx.AzRoot)
+        $rootBlocked = @($Ctx.AzCoverageGaps | Where-Object { $_.Scope -eq '/' -and $_.Operation -match 'role assignments' }).Count -gt 0
+        if ($rootBlocked) {
+            & $add 'AZ-03' 'Azure' 'Root management group access is limited' 'Not assessed' '' `
+                'Role assignments at the tenant root could not be read: the reviewing account has no access at root.' '' '' `
+                'Re-run with Reader at the tenant root management group (a Global Administrator can grant this temporarily by elevating access).' 'B2.d' 'SSA 3' '' 'AzureCoverageGaps.csv'
+        }
+        else {
         & $add 'AZ-03' 'Azure' 'Root management group access is limited' $(if ($root.Count -eq 0) { 'Good' } else { 'Partial' }) 'Medium' `
             $(if ($root.Count -eq 0) { 'Nobody holds privileged access at the tenant root management group.' } else { "$(& $pl $root.Count 'route grants' 'routes grant') privileged access at the tenant root." }) `
             'Root scope access applies to every subscription in the tenant.' `
             'No standing human access at root; use management group scope for the platform team.' `
             'Remove or make eligible any root scope assignment.' `
             'B2.d' 'SSA 3' '' 'P2_AccessPaths.csv'
+        }
+
+        $lh = @($Ctx.AzLighthouse)
+        $lhPriv = @($lh | Where-Object { $_.PrivilegeTier -in @('Critical', 'High') -or ([string]$_.RoleName -notmatch '(?i)reader' -and $_.PrivilegeTier -ne 'Low') })
+        $lhPermPriv = @($lhPriv | Where-Object { [string]$_.AuthorizationType -ne 'Eligible' })
+        $byTenant = @($lh | Group-Object ManagedByTenant | ForEach-Object { "$($_.Name) ($($_.Count))" })
+        $res = if ($lh.Count -eq 0 -or $lhPermPriv.Count -eq 0) { 'Good' } else { 'Weak' }
+        & $add 'AZ-04' 'Azure' 'Access delegated to other organisations (Azure Lighthouse) is just-in-time' $res 'High' `
+            $(if ($lh.Count -eq 0) { 'No Azure Lighthouse delegations to other tenants.' } elseif ($lhPermPriv.Count -eq 0) { "$($lh.Count) Lighthouse authorisations from $($byTenant -join ', '); all write-capable ones are eligible." } else { "$($lh.Count) Lighthouse authorisations give other tenants access: $($byTenant -join ', '). $(& $pl $lhPermPriv.Count 'write-capable authorisation is' 'write-capable authorisations are') permanent (for example $(@($lhPermPriv | Select-Object -First 3 | ForEach-Object { "$($_.RoleName) for $($_.ManagedByTenant) on $($_.SubscriptionName)" }) -join '; '))." }) `
+            'Lighthouse lets people in another organisation''s tenant act in your subscriptions. You cannot see or control their accounts, MFA or devices, and their access does not appear in your own PIM.' `
+            'Write-capable Lighthouse access uses eligible authorisations (PIM in the managing tenant) with approval, and each delegation is reviewed with the supplier contract.' `
+            'Replace permanent Contributor-level authorisations with eligible ones, confirm each managing tenant and offer is still needed, and remove the rest.' `
+            'B2.c' 'SSA 4' 'NCSC CAF B2.c: temporary, time-bound rights for third-party support' 'AzureLighthouseDelegations.csv'
     }
 
     $nonHuman = @($identities | Where-Object { $_.AccountType -eq 'WorkloadIdentity' -and $_.HighestTrustLevel -eq 'TL1' })

@@ -208,6 +208,19 @@ details>summary{cursor:pointer;font-weight:600;padding:4px 0}
     $null = $html.Append((& $tile $m.StandingTL1Paths 'Permanent Tier 0 routes held by people' $(if ([int]$m.StandingTL1Paths -eq 0) { 'good' } else { 'weak' }) 'Target: none'))
     $null = $html.Append('</div>')
 
+    $gaps = @($Data.AzCoverageGaps)
+    if ($gaps.Count -gt 0) {
+        $gapLines = @()
+        $rootGap = @($gaps | Where-Object { $_.Scope -eq '/' })
+        if ($rootGap.Count -gt 0) { $gapLines += 'role assignments at the tenant root could not be read (no access at root)' }
+        $notVisible = @($gaps | Where-Object { $_.Operation -eq 'Resources not visible' })
+        if ($notVisible.Count -gt 0) { $gapLines += "resources inside $(& $pl $notVisible.Count 'subscription' 'subscriptions') could not be listed, so resource-level checks (Key Vault, storage, sensitive resource groups) are incomplete" }
+        $act = @($gaps | Where-Object { $_.Operation -match 'Activity' })
+        if ($act.Count -gt 0) { $gapLines += "the Activity Log could not be read for $(& $pl $act.Count 'subscription' 'subscriptions')" }
+        $other = $gaps.Count - $rootGap.Count - $notVisible.Count - $act.Count
+        if ($other -gt 0) { $gapLines += "$other other collection gaps (see Azure\Raw\AzureCoverageGaps.csv)" }
+        $null = $html.Append("<p class=""note""><strong>Coverage limits for Azure:</strong> $(& $enc ($gapLines -join '; ')). Reader at the tenant root management group closes these gaps.</p>")
+    }
     $null = $html.Append('<h3>NCSC CAF Principle B2 (indicative)</h3><div class="caf">')
     foreach ($c in @($audit.Caf)) {
         $cls = & $resultClass $c.Rating

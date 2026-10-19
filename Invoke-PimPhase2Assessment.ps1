@@ -196,6 +196,7 @@ function Invoke-PimPhase2Assessment {
     $azRgTypes = @(Import-P2Csv -Folder $azureRaw -Name 'AzureResourceGroupTypes.csv')
     $azPolicies = @(Import-P2Csv -Folder $azureRaw -Name 'AzurePimPolicies.csv')
     $azLighthouse = @(Import-P2Csv -Folder $azureRaw -Name 'AzureLighthouseDelegations.csv')
+    $azCoverageGaps = @(Import-P2Csv -Folder $azureRaw -Name 'AzureCoverageGaps.csv')
 
     $hasEntra = $roleAssignments.Count -gt 0
     $hasAzure = $azAccess.Count -gt 0
@@ -225,7 +226,7 @@ function Invoke-PimPhase2Assessment {
     foreach ($r in $approverProfiles) { if ($r.UserId) { & $touch $r.UserId $r.DisplayName $r.UserPrincipalName 'User' $r.UserType $null } }
     foreach ($r in $identityContext) { & $touch $r.Id $r.DisplayName $r.UserPrincipalName $r.ObjectType $r.UserType $r.AccountEnabled }
     foreach ($r in $azAccess) {
-        $ot = switch -Regex ([string]$r.PrincipalCategory) { '^(Member|Guest)$' { 'User' } 'ServicePrincipal|ManagedIdentity|MicrosoftPlatform|ExternalApp' { 'ServicePrincipal' } 'Group' { 'Group' } 'Unresolved|Deleted|LookupFailed|ForeignPrincipal|Unknown' { 'Unresolved' } default { $null } }
+        $ot = switch -Regex ([string]$r.PrincipalCategory) { '^(Member|Guest)$' { 'User' } 'ServicePrincipal|ManagedIdentity|MicrosoftPlatform|ExternalApp' { 'ServicePrincipal' } 'Group' { 'Group' } '^Deleted$' { 'Deleted' } '^ForeignPrincipal$' { 'Foreign' } 'Unresolved|LookupFailed|Unknown' { 'Unresolved' } default { $null } }
         & $touch $r.PrincipalId $r.DisplayName $r.UserPrincipalName $ot $(if ($r.PrincipalCategory -eq 'Guest') { 'Guest' } else { $null }) $r.AccountEnabled
     }
 
@@ -291,7 +292,9 @@ function Invoke-PimPhase2Assessment {
 
         $type = 'Unknown'
         $objType = [string]$e.ObjectType
-        if ($objType -eq 'Unresolved' -or $dn -match '^Unresolved \(') { $type = 'Unresolved' }
+        if ($objType -eq 'Deleted') { $type = 'Deleted identity' }
+        elseif ($objType -eq 'Foreign') { $type = 'Other tenant principal' }
+        elseif ($objType -eq 'Unresolved' -or $dn -match '^Unresolved \(') { $type = 'Unresolved' }
         elseif ($objType -match 'Group') { $type = 'Group' }
         elseif ($objType -match 'ServicePrincipal') { $type = 'WorkloadIdentity' }
         elseif ($breakGlassUpns -contains $upnLower -or (& $matchAny $dn $idRules.BreakGlassPatterns) -or (& $matchAny $local $idRules.BreakGlassPatterns)) { $type = 'BreakGlass' }
@@ -306,7 +309,8 @@ function Invoke-PimPhase2Assessment {
         $orgType = if ($org) { $org.Type } else { $null }
         if ($type -eq 'WorkloadIdentity' -or $type -eq 'Group') { $orgName = $TenantName; $orgType = 'Tenant' }
         elseif (-not $homeDomain -and $type -in @('CLAD', 'Other admin account', 'Generic/Service', 'BreakGlass')) { $orgName = $TenantName; $orgType = 'Tenant' }
-        elseif ($type -eq 'Unresolved') { $orgName = 'Unresolved'; $orgType = 'Unknown' }
+        elseif ($type -in @('Unresolved', 'Deleted identity')) { $orgName = 'Unresolved'; $orgType = 'Unknown' }
+        elseif ($type -eq 'Other tenant principal') { $orgName = 'Other tenant'; $orgType = 'Unknown' }
         elseif (-not $homeDomain) { $orgName = 'Not known'; $orgType = 'Unknown' }
 
         # Person key: cleaned display name, or the guest UPN local part.
@@ -886,7 +890,9 @@ function Invoke-PimPhase2Assessment {
             'Everyday' { $null = $actions.Add("Move to the person's CLAD identity (SEC-PIM-08)") }
             'Guest' { $null = $actions.Add('Confirm sponsor, organisation and expiry; decide guest vs tenant CLAD pattern (OD-09, runbook 5.6)') }
             'Unknown' { $null = $actions.Add('Identify the principal; remove if orphaned') }
-            'Unresolved' { $null = $actions.Add('Principal could not be resolved: re-run the Azure review (it now distinguishes deleted from unreadable); remove if deleted') }
+            'Unresolved' { $null = $actions.Add('Principal could not be read: check the reviewing account can read directory objects, then re-run') }
+            'Deleted identity' { $null = $actions.Add('Remove: the identity has been deleted') }
+            'Other tenant principal' { $null = $actions.Add('Identify the external organisation and confirm the access is still needed') }
         }
         if ($e -and $e.AccountEnabled -eq $false) { $null = $actions.Add('Remove: account disabled') }
         if ($p.AccountType -notin @('BreakGlass', 'WorkloadIdentity')) {
@@ -948,9 +954,9 @@ function Invoke-PimPhase2Assessment {
     }
 
     # ---- HLD findings --------------------------------------------------------------------------
-    $people = @($privPaths | Where-Object { $_.AccountType -notin @('WorkloadIdentity', 'BreakGlass', 'Group', 'Unknown', 'Unresolved') } | Select-Object -ExpandProperty Person -Unique)
+    $people = @($privPaths | Where-Object { $_.AccountType -notin @('WorkloadIdentity', 'BreakGlass', 'Group', 'Unknown', 'Unresolved', 'Deleted identity', 'Other tenant principal') } | Select-Object -ExpandProperty Person -Unique)
     $gaPeople = @($privPaths | Where-Object { $_.Plane -eq 'Entra' -and $_.Role -eq 'Global Administrator' -and $_.AccountType -notin @('BreakGlass', 'WorkloadIdentity') } | Select-Object -ExpandProperty Person -Unique)
-    $tl1People = @($tl1Paths | Where-Object { $_.AccountType -notin @('BreakGlass', 'WorkloadIdentity', 'Unresolved') } | Select-Object -ExpandProperty Person -Unique)
+    $tl1People = @($tl1Paths | Where-Object { $_.AccountType -notin @('BreakGlass', 'WorkloadIdentity', 'Unresolved', 'Deleted identity', 'Other tenant principal') } | Select-Object -ExpandProperty Person -Unique)
     $selfApprovalPeople = @($selfApproval | Where-Object { $_.Route -like 'Linked*' } | Select-Object -ExpandProperty Person -Unique)
     $selfApprovalTl1People = @($selfApproval | Where-Object { $_.Route -like 'Linked*' -and $_.TrustLevel -eq 'TL1' } | Select-Object -ExpandProperty Person -Unique)
     $approverEveryday = @($approverGroups | Where-Object { $_.EverydayOrGuestMembers -gt 0 })
@@ -1010,7 +1016,7 @@ function Invoke-PimPhase2Assessment {
         Tenant                        = $TenantShortName
         TenantName                    = $TenantName
         EntraRun                      = if ($EntraRunFolder) { Split-Path $EntraRunFolder -Leaf } else { $null }
-        AzureRun                      = if ($AzureRunFolder) { Split-Path $AzureRunFolder -Leaf } else { $null }
+        AzureRun                      = if ($AzureRunFolder) { $leaf = Split-Path $AzureRunFolder -Leaf; if ($leaf -eq 'Azure') { "$(Split-Path (Split-Path $AzureRunFolder -Parent) -Leaf) (Azure)" } else { $leaf } } else { $null }
         PeopleWithPrivilege           = $people.Count
         PeopleWithTL1                 = $tl1People.Count
         PeopleReachingGlobalAdmin     = $gaPeople.Count
@@ -1031,6 +1037,8 @@ function Invoke-PimPhase2Assessment {
         BreakGlassAccounts            = $breakGlass.Count
         DisabledWithAccess            = $disabled.Count
         UnresolvedPrincipals          = @($identityRows | Where-Object AccountType -eq 'Unresolved').Count
+        DeletedIdentitiesWithAccess   = @($identityRows | Where-Object AccountType -eq 'Deleted identity').Count
+        OtherTenantPrincipals         = @($identityRows | Where-Object AccountType -eq 'Other tenant principal').Count
         WithoutP2                     = $noP2.Count
         TL1PolicyGaps                 = $tl1PolicyGaps.Count
         PolicyGaps                    = $policyGaps.Count
@@ -1047,6 +1055,7 @@ function Invoke-PimPhase2Assessment {
         SelfApprovalTl1People = $selfApprovalTl1People; ApproverEveryday = $approverEveryday
         CaPolicies = $caPolicies; AccessReviews = $accessReviews; NoP2 = $noP2; HasLicences = ($licences.Count -gt 0)
         AzureAccess = $azAccess; AzStandingTl1 = $azStandingTl1; AzRoot = $azRoot
+        AzLighthouse = $azLighthouse; AzCoverageGaps = $azCoverageGaps
     }
     foreach ($row in @($audit.Controls) + @($audit.Caf) + @($audit.Ssa) + @($audit.CoverageEntra) + @($audit.CoverageAzure) + @($audit.Oversubscribed)) {
         if ($row) { Add-Member -InputObject $row -NotePropertyName Tenant -NotePropertyValue $TenantShortName -Force }
@@ -1100,6 +1109,7 @@ function Invoke-PimPhase2Assessment {
         HasAzure        = $hasAzure
         EntraRun        = $metrics.EntraRun
         AzureRun        = $metrics.AzureRun
+        AzCoverageGaps  = $azCoverageGaps
         Collected       = @{
             GroupPolicies = $groupPolicyFlat.Count -gt 0
             AuthMethods   = $authMethods.Count -gt 0
