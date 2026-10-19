@@ -464,19 +464,26 @@ function Get-PimAdvancedRiskData {
         }
     )
 
-    $activationAnomalies = New-ActivationAnomalies -ActivationRows $activationRows
-    $caPolicies = Get-ConditionalAccessPolicies
-    $accessReviews = Get-AccessReviewOverview
-    $workloadRisk = Get-ServicePrincipalRiskRows -RoleAssignments $RoleAssignments -HighImpactRoles $HighImpactRoles
-    $nestedPaths = Get-NestedGroupPrivilegePaths -PrivilegedGroups $PrivilegedGroups -RoleAssignments $RoleAssignments -MaxDepth $MaxNestedTraversalDepth
+    $activationAnomalies = @(New-ActivationAnomalies -ActivationRows @($activationRows))
+    $caPolicies = @(Get-ConditionalAccessPolicies)
+    $accessReviews = @(Get-AccessReviewOverview)
+    $workloadRisk = @(Get-ServicePrincipalRiskRows -RoleAssignments $RoleAssignments -HighImpactRoles $HighImpactRoles)
+    $nestedPaths = @(Get-NestedGroupPrivilegePaths -PrivilegedGroups $PrivilegedGroups -RoleAssignments $RoleAssignments -MaxDepth $MaxNestedTraversalDepth)
+
+    if ($null -eq $activationRows) { $activationRows = @() }
+    if ($null -eq $activationAnomalies) { $activationAnomalies = @() }
+    if ($null -eq $caPolicies) { $caPolicies = @() }
+    if ($null -eq $accessReviews) { $accessReviews = @() }
+    if ($null -eq $workloadRisk) { $workloadRisk = @() }
+    if ($null -eq $nestedPaths) { $nestedPaths = @() }
 
     if (-not $ReturnObjectsOnly) {
-        Export-PimData -Data $activationRows -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ActivationRequests.beta.csv')
-        Export-PimData -Data $activationAnomalies -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ActivationAnomalies.csv')
-        Export-PimData -Data $caPolicies -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ConditionalAccessPolicies.csv')
-        Export-PimData -Data $accessReviews -CsvPath (Join-Path -Path $rawFolder -ChildPath 'AccessReviews.beta.csv')
-        Export-PimData -Data $workloadRisk -CsvPath (Join-Path -Path $rawFolder -ChildPath 'WorkloadIdentityRisk.csv')
-        Export-PimData -Data $nestedPaths -CsvPath (Join-Path -Path $rawFolder -ChildPath 'NestedGroupPrivilegePaths.csv')
+        Export-PimData -Data @($activationRows) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ActivationRequests.beta.csv')
+        Export-PimData -Data @($activationAnomalies) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ActivationAnomalies.csv')
+        Export-PimData -Data @($caPolicies) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'ConditionalAccessPolicies.csv')
+        Export-PimData -Data @($accessReviews) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'AccessReviews.beta.csv')
+        Export-PimData -Data @($workloadRisk) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'WorkloadIdentityRisk.csv')
+        Export-PimData -Data @($nestedPaths) -CsvPath (Join-Path -Path $rawFolder -ChildPath 'NestedGroupPrivilegePaths.csv')
     }
 
     return [pscustomobject]@{

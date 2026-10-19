@@ -198,7 +198,7 @@ function Get-TenantProfile {
         $displayName = $primaryPrefix
     }
 
-    $labelSource = if (-not [string]::IsNullOrWhiteSpace($TenantLabelOverride)) { $TenantLabelOverride } elseif (-not [string]::IsNullOrWhiteSpace($displayName)) { $displayName } elseif (-not [string]::IsNullOrWhiteSpace($primaryPrefix)) { $primaryPrefix } elseif (-not [string]::IsNullOrWhiteSpace($prefix)) { $prefix } elseif (-not [string]::IsNullOrWhiteSpace($tenantId)) { $tenantId } else { 'Tenant' }
+    $labelSource = if (-not [string]::IsNullOrWhiteSpace($displayName)) { $displayName } elseif (-not [string]::IsNullOrWhiteSpace($primaryPrefix)) { $primaryPrefix } elseif (-not [string]::IsNullOrWhiteSpace($prefix)) { $prefix } elseif (-not [string]::IsNullOrWhiteSpace($TenantLabelOverride)) { $TenantLabelOverride } elseif (-not [string]::IsNullOrWhiteSpace($tenantId)) { $tenantId } else { 'Tenant' }
     $tenantLabel = Get-SafeFileName -Name $labelSource
     $tenantLabel = $tenantLabel -replace '\s+', '_'
 
@@ -482,6 +482,46 @@ function New-PimSummaryReport {
         Sort-Object -Property UserDisplayName
     )
 
+    $userPrivilegedAccessRows = @(
+        $UserAccessPaths |
+        Where-Object { $_.UserId } |
+        Group-Object -Property UserId |
+        ForEach-Object {
+            $rows = @($_.Group)
+            $first = $rows[0]
+            $directRoles = @(
+                $rows |
+                Where-Object { $_.AccessPathType -ne 'GroupInherited' } |
+                Select-Object -ExpandProperty RoleName -Unique |
+                Sort-Object
+            )
+            $inheritedRoles = @(
+                $rows |
+                Where-Object { $_.AccessPathType -eq 'GroupInherited' } |
+                Select-Object -ExpandProperty RoleName -Unique |
+                Sort-Object
+            )
+            $allRoles = @(($directRoles + $inheritedRoles) | Select-Object -Unique | Sort-Object)
+
+            if ($allRoles.Count -eq 0) {
+                return
+            }
+
+            [pscustomobject]@{
+                UserDisplayName     = $first.UserDisplayName
+                UserPrincipalName   = $first.UserPrincipalName
+                UserCategory        = $first.UserCategory
+                TotalRoleCount      = $allRoles.Count
+                DirectRoleCount     = $directRoles.Count
+                InheritedRoleCount  = $inheritedRoles.Count
+                RolesDirect         = ($directRoles -join '; ')
+                RolesInherited      = ($inheritedRoles -join '; ')
+                AllPrivilegedRoles  = ($allRoles -join '; ')
+            }
+        } |
+        Sort-Object -Property @{Expression='TotalRoleCount';Descending=$true}, UserDisplayName
+    )
+
     $scorecardTableRows = @(
         $ExecutiveScorecard |
         Select-Object Metric, Value, Status, Target, Commentary
@@ -546,8 +586,9 @@ function New-PimSummaryReport {
         $improvements += 'Continue periodic assurance testing and maintain current control posture.'
     }
 
-    $summaryPath = Join-Path -Path $OutputFolder -ChildPath 'Summary.md'
-    $summaryHtmlPath = Join-Path -Path $OutputFolder -ChildPath 'Summary.html'
+    $summaryFileStem = "Summary_$($TenantProfile.TenantLabel)"
+    $summaryPath = Join-Path -Path $OutputFolder -ChildPath ("{0}.md" -f $summaryFileStem)
+    $summaryHtmlPath = Join-Path -Path $OutputFolder -ChildPath ("{0}.html" -f $summaryFileStem)
     $assessmentDate = (Get-Date $RunMeta.RunUtc).ToString('yyyy-MM-dd')
 
     $lines = @()
@@ -581,6 +622,7 @@ function New-PimSummaryReport {
     $lines += '- 10.0 Key Governance Metrics - Executive Assurance Scorecard'
     $lines += '- 11.0 Direct Privileged Role Assignments - Users and Groups Register'
     $lines += '- 12.0 Group-Inherited Privilege Paths - Elevation via Group Membership'
+    $lines += '- 12.1 Consolidated Privileged Access by User - Direct and Group-Inherited Roles'
     $lines += '- 13.0 Technical Risk Findings Register - Full Evidence Set'
     $lines += '- 14.0 RAG Status Indicators - Governance Traffic Light Position'
     $lines += '- 15.0 Governance Improvement Roadmap - Prioritised Recommendations'
@@ -684,6 +726,12 @@ function New-PimSummaryReport {
     $lines += '- Active Path Count: Number of currently active inherited role paths via group membership.'
     $lines += '- Eligible Path Count: Number of inherited role paths that are eligible (activatable) but not currently active.'
     $lines += (ConvertTo-MarkdownTable -Rows $groupElevationRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'RoleCount', 'RolesViaGroupMembership', 'ActivePathCount', 'EligiblePathCount', 'SourceGroups'))
+
+    $lines += ''
+    $lines += '## 12.1 Consolidated Privileged Access by User - Direct and Group-Inherited Roles'
+    $lines += ''
+    $lines += 'This section consolidates every user with privileged access from any path and lists the complete role set they can reach (direct assignments and group-inherited assignments combined).'
+    $lines += (ConvertTo-MarkdownTable -Rows $userPrivilegedAccessRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'TotalRoleCount', 'DirectRoleCount', 'InheritedRoleCount', 'RolesDirect', 'RolesInherited', 'AllPrivilegedRoles'))
 
     $lines += ''
     $lines += '## 13.0 Technical Risk Findings Register - Full Evidence Set'
@@ -818,6 +866,7 @@ function New-PimSummaryReport {
     $html += '<li>10.0 Key Governance Metrics - Executive Assurance Scorecard</li>'
     $html += '<li>11.0 Direct Privileged Role Assignments - Users and Groups Register</li>'
     $html += '<li>12.0 Group-Inherited Privilege Paths - Elevation via Group Membership</li>'
+    $html += '<li>12.1 Consolidated Privileged Access by User - Direct and Group-Inherited Roles</li>'
     $html += '<li>13.0 Technical Risk Findings Register - Full Evidence Set</li>'
     $html += '<li>14.0 RAG Status Indicators - Governance Traffic Light Position</li>'
     $html += '<li>15.0 Governance Improvement Roadmap - Prioritised Recommendations</li>'
@@ -922,6 +971,10 @@ function New-PimSummaryReport {
     $html += '<li><strong>Eligible Path Count:</strong> Number of inherited role paths that are eligible (activatable) but not currently active.</li>'
     $html += '</ul>'
     $html += (ConvertTo-HtmlTable -Rows $groupElevationRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'RoleCount', 'RolesViaGroupMembership', 'ActivePathCount', 'EligiblePathCount', 'SourceGroups'))
+
+    $html += '<h2>12.1 Consolidated Privileged Access by User &#8212; Direct and Group-Inherited Roles</h2>'
+    $html += '<p class="section-intro">This section consolidates every user with privileged access from any path and lists the complete role set they can reach (direct assignments and group-inherited assignments combined).</p>'
+    $html += (ConvertTo-HtmlTable -Rows $userPrivilegedAccessRows -Columns @('UserDisplayName', 'UserPrincipalName', 'UserCategory', 'TotalRoleCount', 'DirectRoleCount', 'InheritedRoleCount', 'RolesDirect', 'RolesInherited', 'AllPrivilegedRoles'))
 
     $html += '<h2 class="section-break">13.0 Technical Risk Findings Register &#8212; Full Evidence Set</h2>'
     $html += (ConvertTo-HtmlTable -Rows $findingsDetailRows -Columns @('RiskRating', 'FindingType', 'Subject', 'RoleName', 'Details', 'EvidenceId'))
@@ -1825,7 +1878,7 @@ function Invoke-FullPimReview {
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
         $tenantProfile = Get-TenantProfile -TenantLabelOverride $config.TenantLabelOverride
 
-        $tenantRootName = Get-SafeFileName -Name $tenantProfile.TenantLabel
+        $tenantRootName = $tenantProfile.TenantLabel
         $tenantRootFolder = Ensure-Directory -Path (Join-Path -Path $targetRoot -ChildPath $tenantRootName)
         $runOutputFolder = Ensure-Directory -Path (Join-Path -Path $tenantRootFolder -ChildPath "Run-$runFolderName")
         $rawFolder = Ensure-Directory -Path (Join-Path -Path $runOutputFolder -ChildPath 'Raw')
@@ -1848,7 +1901,7 @@ function Invoke-FullPimReview {
         }
         Export-PimData -Data @($tenantDetailsRow) -CsvPath $tenantDetailsCsvPath -JsonPath $tenantDetailsJsonPath
 
-        $transcriptPath = Join-Path -Path $runOutputFolder -ChildPath 'Transcript.log'
+        $transcriptPath = Join-Path -Path $runOutputFolder -ChildPath ("Transcript_{0}.log" -f $tenantProfile.TenantLabel)
         if (-not $DisableTranscript) {
             $transcriptStarted = Start-PimTranscriptSafe -TranscriptPath $transcriptPath
         }
@@ -2095,7 +2148,7 @@ function Invoke-FullPimReview {
 
         Add-Member -InputObject $runMeta -NotePropertyName RoleElevationMatrixPath -NotePropertyValue (Join-Path -Path $rawFolder -ChildPath 'RoleElevationMatrix.csv') -Force
 
-        $summaryPdfPath = Join-Path -Path $runOutputFolder -ChildPath 'Summary.pdf'
+        $summaryPdfPath = Join-Path -Path $runOutputFolder -ChildPath ("Summary_{0}.pdf" -f $tenantProfile.TenantLabel)
     $pdfPath = Convert-SummaryToPdf -MarkdownPath $summaryInfo.MarkdownPath -HtmlPath $summaryInfo.HtmlPath -PdfPath $summaryPdfPath
         Add-Member -InputObject $runMeta -NotePropertyName SummaryPath -NotePropertyValue $summaryInfo.MarkdownPath -Force
         Add-Member -InputObject $runMeta -NotePropertyName SummaryHtmlPath -NotePropertyValue $summaryInfo.HtmlPath -Force

@@ -644,6 +644,15 @@ function New-ExecutiveScorecard {
 
     $gaReachableUsers = @(
         $UserAccessPaths |
+        Where-Object {
+            $_.RoleName -eq 'Global Administrator' -and
+            ($_.AssignmentState -eq 'Active' -or $_.AssignmentState -eq 'Eligible')
+        } |
+        Select-Object -ExpandProperty UserId -Unique
+    )
+
+    $gaActiveUsers = @(
+        $UserAccessPaths |
         Where-Object { $_.RoleName -eq 'Global Administrator' -and $_.AssignmentState -eq 'Active' } |
         Select-Object -ExpandProperty UserId -Unique
     )
@@ -685,7 +694,8 @@ function New-ExecutiveScorecard {
 
     $rows = @()
     $rows += [pscustomobject]@{ Metric = 'OverallRiskScore'; Value = $score; Status = $trafficLight; Target = '>= 80'; Commentary = 'Composite score across identity, policy, and governance controls.' }
-    $rows += [pscustomobject]@{ Metric = 'GlobalAdminReachableUsers'; Value = $gaReachableUsers.Count; Status = if ($gaReachableUsers.Count -le 5) { 'Green' } else { 'Red' }; Target = '<= 5'; Commentary = 'Maximum of five users should have active GA access path.' }
+    $rows += [pscustomobject]@{ Metric = 'GlobalAdminReachableUsers'; Value = $gaReachableUsers.Count; Status = if ($gaReachableUsers.Count -le 5) { 'Green' } else { 'Red' }; Target = '<= 5'; Commentary = 'Maximum of five users should have Global Administrator access paths (Active or Eligible).' }
+    $rows += [pscustomobject]@{ Metric = 'GlobalAdminActiveUsers'; Value = $gaActiveUsers.Count; Status = if ($gaActiveUsers.Count -le 5) { 'Green' } else { 'Amber' }; Target = '<= 5'; Commentary = 'Users with currently Active Global Administrator access paths.' }
     $rows += [pscustomobject]@{ Metric = 'BreakGlassAccountsDetected'; Value = $bgAccounts.Count; Status = if ($bgAccounts.Count -eq 2) { 'Green' } elseif ($bgAccounts.Count -lt 2) { 'Red' } else { 'Amber' }; Target = '= 2'; Commentary = 'Maintain exactly two monitored break-glass accounts.' }
     $rows += [pscustomobject]@{ Metric = 'HighRiskFindings'; Value = $highFindings; Status = if ($highFindings -eq 0) { 'Green' } elseif ($highFindings -le 10) { 'Amber' } else { 'Red' }; Target = '0'; Commentary = 'High-risk findings requiring immediate remediation.' }
     $rows += [pscustomobject]@{ Metric = 'EnabledCAPoliciesWithoutMFA'; Value = $enabledCaWithoutMfa; Status = if ($enabledCaWithoutMfa -eq 0) { 'Green' } elseif ($enabledCaWithoutMfa -le 2) { 'Amber' } else { 'Red' }; Target = '0'; Commentary = 'Enabled Conditional Access policies that do not enforce MFA control.' }
