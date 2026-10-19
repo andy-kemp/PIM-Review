@@ -1,0 +1,618 @@
+{
+  "_about": "Template PIM Phase 2 role catalogue and identity rules. Copy to Config/pim-phase2.catalogue.local.json (git-ignored) and edit for your programme: the scripts use the .local.json file when it exists. Trust levels follow a TL1 (highest) to TL4 model; entries marked Proposed or Open are drafts until agreed.",
+  "Branding": {
+    "PreparedBy": "Your organisation",
+    "Programme": "PIM Phase 2",
+    "Classification": "Confidential"
+  },
+  "TrustLevelBaselines": {
+    "TL1": {
+      "MaxActivationHours": 2,
+      "ApprovalRequired": true,
+      "MfaOrAuthContextRequired": true,
+      "AuthContextTarget": true,
+      "JustificationRequired": true,
+      "PermanentActiveAllowed": false,
+      "PermanentEligibleAllowed": false,
+      "ReviewMonths": 3,
+      "AssignmentPattern": "Direct eligible or single-purpose group; never an operational bundle"
+    },
+    "TL2": {
+      "MaxActivationHours": 4,
+      "ApprovalRequired": null,
+      "MfaOrAuthContextRequired": true,
+      "AuthContextTarget": true,
+      "JustificationRequired": true,
+      "PermanentActiveAllowed": false,
+      "PermanentEligibleAllowed": false,
+      "ReviewMonths": 6,
+      "AssignmentPattern": "Tightly scoped service group or direct eligible"
+    },
+    "TL3": {
+      "MaxActivationHours": 8,
+      "ApprovalRequired": false,
+      "MfaOrAuthContextRequired": true,
+      "AuthContextTarget": false,
+      "JustificationRequired": true,
+      "PermanentActiveAllowed": false,
+      "PermanentEligibleAllowed": null,
+      "ReviewMonths": 12,
+      "AssignmentPattern": "Approved operational bundle"
+    },
+    "TL4": {
+      "MaxActivationHours": null,
+      "ApprovalRequired": false,
+      "MfaOrAuthContextRequired": false,
+      "AuthContextTarget": false,
+      "JustificationRequired": false,
+      "PermanentActiveAllowed": true,
+      "PermanentEligibleAllowed": true,
+      "ReviewMonths": 12,
+      "AssignmentPattern": "Standing read access acceptable"
+    }
+  },
+  "EntraRoles": {
+    "Global Administrator": {
+      "Level": "TL1",
+      "Source": "HLD",
+      "Rationale": "Tenant-wide control."
+    },
+    "Privileged Role Administrator": {
+      "Level": "TL1",
+      "Source": "HLD",
+      "Rationale": "Controls privileged role assignment and PIM."
+    },
+    "Security Administrator": {
+      "Level": "TL1",
+      "Source": "HLD",
+      "Rationale": "High security impact; final mapping to confirm."
+    },
+    "Conditional Access Administrator": {
+      "Level": "TL1",
+      "Source": "HLD",
+      "Rationale": "Can weaken authentication and access policy."
+    },
+    "Privileged Authentication Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can reset authentication methods (including passkeys) for any user, including Global Administrators."
+    },
+    "Hybrid Identity Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Controls sync and federation; can create identities that bypass cloud controls."
+    },
+    "Authentication Policy Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Changes authentication methods policy and strengths for the whole tenant."
+    },
+    "Domain Name Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can federate domains, a known tenant takeover route."
+    },
+    "External Identity Provider Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can add federated identity providers."
+    },
+    "Application Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can add credentials to any application, including those with privileged Graph permissions."
+    },
+    "Cloud Application Administrator": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can add credentials to applications holding privileged permissions."
+    },
+    "Partner Tier2 Support": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Can reset passwords of all users including administrators."
+    },
+    "Directory Synchronization Accounts": {
+      "Level": "TL1",
+      "Source": "Proposed",
+      "Rationale": "Used by sync service; should never be assigned to people."
+    },
+    "Exchange Administrator": {
+      "Level": "TL2",
+      "Source": "HLD",
+      "Rationale": "Service-specific but high impact; prefer narrower Exchange roles."
+    },
+    "SharePoint Administrator": {
+      "Level": "TL2",
+      "Source": "HLD",
+      "Rationale": "Service and data impact."
+    },
+    "Teams Administrator": {
+      "Level": "TL2",
+      "Source": "HLD",
+      "Rationale": "Service-specific administration."
+    },
+    "Compliance Administrator": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Purview: can access sensitive content. HLD: TL1 or TL2 open."
+    },
+    "Compliance Data Administrator": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Purview data. HLD: TL1 or TL2 open."
+    },
+    "eDiscovery Administrator": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Can search sensitive communications. HLD: TL1 or TL2 open."
+    },
+    "eDiscovery Manager": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Can search sensitive communications. HLD: TL1 or TL2 open."
+    },
+    "Purview Workload Content Administrator": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Purview content access. HLD: TL1 or TL2 open."
+    },
+    "Purview Workload Content Writer": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Purview content access. HLD: TL1 or TL2 open."
+    },
+    "Intune Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Can run scripts on managed devices; TL1 if privileged access devices are Intune-managed."
+    },
+    "Azure AD Joined Device Local Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Local administrator on every Entra-joined device, including administrators' devices."
+    },
+    "Cloud Device Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Can disable/delete devices and read BitLocker keys."
+    },
+    "Authentication Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Can reset methods for non-admin users."
+    },
+    "Identity Governance Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Manages access packages and reviews."
+    },
+    "Lifecycle Workflows Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Workflows can modify accounts at scale."
+    },
+    "Security Operator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Security operations actions."
+    },
+    "Cloud App Security Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Defender for Cloud Apps policy and governance actions."
+    },
+    "Attack Simulation Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Can send simulated phishing to the whole workforce."
+    },
+    "Directory Writers": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Broad directory write."
+    },
+    "Power Platform Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "All Power Platform environments and data."
+    },
+    "Dynamics 365 Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Dynamics data and configuration."
+    },
+    "Fabric Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "All Fabric / Power BI tenant settings and data."
+    },
+    "Azure DevOps Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "DevOps organisation policy."
+    },
+    "Billing Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Purchasing and subscriptions."
+    },
+    "B2C IEF Policy Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "B2C authentication policies."
+    },
+    "Windows 365 Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Cloud PC management."
+    },
+    "Teams Communications Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Telephony configuration."
+    },
+    "Attribute Assignment Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Custom security attributes can drive ABAC conditions."
+    },
+    "Attribute Definition Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Custom security attribute definitions."
+    },
+    "Attribute Log Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Audit of attribute changes."
+    },
+    "AI Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Copilot and AI configuration."
+    },
+    "Insights Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Workplace analytics configuration."
+    },
+    "Office Apps Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Office app policies."
+    },
+    "Yammer Administrator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Viva Engage service."
+    },
+    "Tenant Creator": {
+      "Level": "TL2",
+      "Source": "Proposed",
+      "Rationale": "Can create new tenants."
+    },
+    "User Administrator": {
+      "Level": "TL3",
+      "Source": "HLD",
+      "Rationale": "Frequent operational activity."
+    },
+    "Groups Administrator": {
+      "Level": "TL3",
+      "Source": "HLD",
+      "Rationale": "Frequent operational activity. Note: can change membership of non-role-assignable groups that hold Azure roles."
+    },
+    "Helpdesk Administrator": {
+      "Level": "TL3",
+      "Source": "HLD",
+      "Rationale": "Frequent operational activity."
+    },
+    "Password Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Non-admin password resets."
+    },
+    "License Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Licence assignment."
+    },
+    "Guest Inviter": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Can invite guests."
+    },
+    "Service Support Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Service health and support tickets."
+    },
+    "Printer Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Universal Print."
+    },
+    "Places Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Places configuration."
+    },
+    "Organizational Branding Administrator": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Sign-in branding."
+    },
+    "Application Developer": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Can register applications."
+    },
+    "Teams Communications Support Engineer": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Call troubleshooting."
+    },
+    "Reports Reader": {
+      "Level": "TL3",
+      "Source": "HLD",
+      "Rationale": "HLD: TL3 or TL4 open."
+    },
+    "Global Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read everything, including security configuration."
+    },
+    "Security Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read security configuration and alerts."
+    },
+    "Message Center Privacy Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only."
+    },
+    "Insights Analyst": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only analytics."
+    },
+    "Insights Business Leader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only analytics."
+    },
+    "Directory Readers": {
+      "Level": "TL4",
+      "Source": "Proposed",
+      "Rationale": "Default user read; usually not a privileged role."
+    },
+    "Usage Summary Reports Reader": {
+      "Level": "TL4",
+      "Source": "Proposed",
+      "Rationale": "Aggregated usage only."
+    },
+    "Attribute Assignment Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only."
+    },
+    "Attribute Definition Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only."
+    },
+    "Attribute Log Reader": {
+      "Level": "TL3",
+      "Source": "Proposed",
+      "Rationale": "Read-only."
+    },
+    "Example - Custom LAPS reader role": {
+      "Level": "TL2",
+      "Source": "Open",
+      "Rationale": "Example custom role entry: classify custom roles from their effective permissions."
+    }
+  },
+  "EntraDefaultLevel": {
+    "Level": "TL2",
+    "Source": "Unclassified",
+    "Rationale": "Not in the catalogue. Defaulted to TL2 pending design authority classification."
+  },
+  "AzureRoleFamilies": {
+    "AccessControl": [
+      "Owner",
+      "User Access Administrator",
+      "Role Based Access Control Administrator"
+    ],
+    "ManagementGroup": [
+      "Management Group Contributor"
+    ],
+    "Contributor": [
+      "Contributor"
+    ],
+    "ControlPlaneSecurity": [
+      "Resource Policy Contributor",
+      "Security Admin",
+      "Log Analytics Contributor",
+      "Monitoring Contributor",
+      "Microsoft Sentinel Contributor",
+      "Automation Contributor",
+      "Network Contributor",
+      "Virtual Machine Contributor",
+      "Storage Account Contributor",
+      "Azure Kubernetes Service Contributor Role",
+      "Azure Kubernetes Service Cluster Admin Role",
+      "Azure Kubernetes Service RBAC Cluster Admin",
+      "Logic App Contributor"
+    ],
+    "DataPlaneAdmin": [
+      "Key Vault Administrator",
+      "Key Vault Secrets Officer",
+      "Key Vault Crypto Officer",
+      "Key Vault Certificates Officer",
+      "Storage Blob Data Owner",
+      "Virtual Machine Administrator Login",
+      "Cosmos DB Operator"
+    ],
+    "DataRead": [
+      "Key Vault Secrets User",
+      "Key Vault Crypto User",
+      "Storage Blob Data Reader",
+      "Storage Blob Data Contributor",
+      "Storage File Data Privileged Reader",
+      "Storage File Data Privileged Contributor",
+      "Reader and Data Access",
+      "Virtual Machine User Login",
+      "Cognitive Services User"
+    ],
+    "Reader": [
+      "Reader",
+      "Monitoring Reader",
+      "Billing Reader",
+      "Cost Management Reader",
+      "Log Analytics Reader",
+      "Workbook Reader",
+      "Security Reader",
+      "Microsoft Sentinel Reader"
+    ]
+  },
+  "AzureFamilyByTier": {
+    "Critical": "AccessControl",
+    "High": "Contributor",
+    "Medium": "Workload",
+    "Low": "Reader"
+  },
+  "AzureLevelMatrix": {
+    "AccessControl": {
+      "Root": "TL1",
+      "ManagementGroup": "TL1",
+      "Subscription": "TL1",
+      "ResourceGroup": "TL2",
+      "Resource": "TL2"
+    },
+    "ManagementGroup": {
+      "Root": "TL1",
+      "ManagementGroup": "TL1",
+      "Subscription": "TL1",
+      "ResourceGroup": "TL1",
+      "Resource": "TL1"
+    },
+    "Contributor": {
+      "Root": "TL1",
+      "ManagementGroup": "TL1",
+      "Subscription": "TL2",
+      "ResourceGroup": "TL2",
+      "Resource": "TL3"
+    },
+    "ControlPlaneSecurity": {
+      "Root": "TL1",
+      "ManagementGroup": "TL1",
+      "Subscription": "TL2",
+      "ResourceGroup": "TL2",
+      "Resource": "TL2"
+    },
+    "DataPlaneAdmin": {
+      "Root": "TL1",
+      "ManagementGroup": "TL1",
+      "Subscription": "TL2",
+      "ResourceGroup": "TL2",
+      "Resource": "TL2"
+    },
+    "DataRead": {
+      "Root": "TL2",
+      "ManagementGroup": "TL2",
+      "Subscription": "TL2",
+      "ResourceGroup": "TL3",
+      "Resource": "TL3"
+    },
+    "Workload": {
+      "Root": "TL2",
+      "ManagementGroup": "TL2",
+      "Subscription": "TL3",
+      "ResourceGroup": "TL3",
+      "Resource": "TL3"
+    },
+    "Reader": {
+      "Root": "TL3",
+      "ManagementGroup": "TL3",
+      "Subscription": "TL3",
+      "ResourceGroup": "TL4",
+      "Resource": "TL4"
+    }
+  },
+  "AzureSensitiveScopes": {
+    "_about": "HLD 7.11.2: scopes holding identity, key management, security tooling, logging/SIEM, policy or automation services are TL1 at any scope for write-capable roles. Matched against subscription, resource group and resource names, and against resource types found in the resource group when the review account can read them.",
+    "NamePatterns": [
+      "(?i)sentinel",
+      "(?i)siem",
+      "(?i)securit(y|ies)",
+      "(?i)identity",
+      "(?i)\\badds\\b|aadds|domain.?controller",
+      "(?i)(^|[-_])kv([-_]|$)|keyvault|key-vault",
+      "(?i)automation",
+      "(?i)\\bhsm\\b"
+    ],
+    "ResourceTypes": [
+      "microsoft.keyvault/vaults",
+      "microsoft.keyvault/managedhsms",
+      "microsoft.securityinsights",
+      "microsoft.operationalinsights/workspaces",
+      "microsoft.automation/automationaccounts",
+      "microsoft.aad/domainservices"
+    ]
+  },
+  "Identity": {
+    "CladUpnPrefixes": [
+      "clad_"
+    ],
+    "CladDisplayNamePatterns": [
+      "^\\(Cloud Admin\\)\\s*"
+    ],
+    "OtherAdminPatterns": [
+      "^\\([^)]*Admin\\)\\s*",
+      "^a_",
+      "^adm[-_]",
+      "^admin[-_]",
+      "[-_.]adm$",
+      "[-_.]admin$"
+    ],
+    "GenericPatterns": [
+      "(?i)^srv[-_]",
+      "(?i)^svc[-_]",
+      "(?i)service account",
+      "(?i)^azureadmin$",
+      "(?i)\\.admin$",
+      "(?i)^admin$",
+      "(?i)shared",
+      "(?i)generic",
+      "(?i)^test",
+      "(?i)sync",
+      "(?i)workflow"
+    ],
+    "BreakGlassPatterns": [
+      "(?i)break.?glass",
+      "(?i)emergency",
+      "(?i)^bg[-_]"
+    ],
+    "BreakGlassUpns": [],
+    "LinkAttribute": null,
+    "IdentityMapCsv": null
+  },
+  "Organisations": {
+    "_about": "Map email/UPN domains (including the source domain of guest #EXT# accounts) to organisations. Type: Tenant, Operator, Partner, Supplier.",
+    "Domains": {
+      "contoso.com": {
+        "Name": "Contoso",
+        "Type": "Partner"
+      },
+      "operator.example": {
+        "Name": "Managed service operator",
+        "Type": "Operator"
+      },
+      "supplier.example": {
+        "Name": "Example supplier",
+        "Type": "Supplier"
+      }
+    }
+  }
+}

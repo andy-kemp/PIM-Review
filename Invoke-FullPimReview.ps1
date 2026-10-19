@@ -40,7 +40,9 @@ param(
     [switch]$DisableTranscript,
     [switch]$IncludeAzureRbac,
     [string[]]$AzureSubscriptionId,
-    [switch]$IncludeAzureResourceLevelAccess
+    [switch]$IncludeAzureResourceLevelAccess,
+    [switch]$SkipPhase2Assessment,
+    [string]$TenantShortName
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
@@ -62,6 +64,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimApproverAnalysis.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-PimReviewWorkbook.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-AzureRbacReview.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Invoke-PimPhase2Assessment.ps1')
 
 function Get-PimConfig {
     [CmdletBinding()]
@@ -1834,7 +1837,9 @@ function Invoke-FullPimReview {
         [switch]$ForceReConnect,
         [switch]$IncludeAzureRbac,
         [string[]]$AzureSubscriptionId,
-        [switch]$IncludeAzureResourceLevelAccess
+        [switch]$IncludeAzureResourceLevelAccess,
+        [switch]$SkipPhase2Assessment,
+        [string]$TenantShortName
     )
 
     $config = Get-PimConfig -ConfigPath $ConfigPath
@@ -2232,6 +2237,21 @@ function Invoke-FullPimReview {
         Add-Member -InputObject $runMeta -NotePropertyName SummaryPath -NotePropertyValue $summaryInfo.MarkdownPath -Force
         Add-Member -InputObject $runMeta -NotePropertyName SummaryHtmlPath -NotePropertyValue $summaryInfo.HtmlPath -Force
         Add-Member -InputObject $runMeta -NotePropertyName SummaryPdfPath -NotePropertyValue $pdfPath -Force
+
+        # PIM Phase 2 assessment over this run's exports (offline; never fails the run).
+        if (-not $SkipPhase2Assessment.IsPresent) {
+            try {
+                $p2Splat = @{ EntraRunFolder = $runOutputFolder; TenantName = $tenantProfile.TenantDisplayName }
+                if ($azureRbacResult -and $azureRbacResult.OutputFolder) { $p2Splat.AzureRunFolder = $azureRbacResult.OutputFolder }
+                if ($TenantShortName) { $p2Splat.TenantShortName = $TenantShortName } else { $p2Splat.TenantShortName = $tenantProfile.TenantLabel }
+                $p2 = Invoke-PimPhase2Assessment @p2Splat
+                Add-Member -InputObject $runMeta -NotePropertyName Phase2OutputFolder -NotePropertyValue $p2.OutputFolder -Force
+                Add-Member -InputObject $runMeta -NotePropertyName Phase2ReportPath -NotePropertyValue $p2.ReportPath -Force
+            }
+            catch {
+                Write-PimLog -Level WARN -Message "PIM Phase 2 assessment failed: $($_.Exception.Message). Re-run Invoke-PimPhase2Assessment.ps1 against this run folder."
+            }
+        }
 
         $metaPath = Join-Path -Path $rawFolder -ChildPath 'RunMetadata.json'
         $runMeta | ConvertTo-Json -Depth 10 | Out-File -FilePath $metaPath -Encoding UTF8

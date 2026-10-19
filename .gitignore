@@ -1,2 +1,7 @@
 # Runtime exports and generated review artifacts
 Output/
+
+# Local tenant configs and identity maps (client data, never commit)
+Config/*.local.json
+Config/*.local.csv
+*.local.csv

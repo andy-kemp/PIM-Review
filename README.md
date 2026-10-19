@@ -34,6 +34,11 @@ The implementation is read-only and idempotent for reporting.
 - `Get-AzureRbacInsights.ps1` (Azure review collectors: sign-in, Activity Log, Lighthouse, Key Vault/storage/SQL/AKS, workload credentials)
 - `New-AzureRbacReport.ps1` (Azure review HTML/Markdown report)
 - `Invoke-FullPimReview.ps1`
+- `Invoke-PimPhase2Assessment.ps1` (PIM Phase 2 assessment over a tenant's Entra and Azure exports; runs offline)
+- `New-PimPhase2Report.ps1` (Phase 2 HTML report)
+- `Compare-PimPhase2Assessment.ps1` (diff between two assessments of one tenant)
+- `Invoke-PimPartnershipRollup.ps1` (all partner tenants side by side)
+- `Config/pim-phase2.catalogue.json` (trust levels, role catalogue, identity and organisation rules)
 - `Output/` (created/used at runtime)
 
 ## Prerequisites
@@ -264,6 +269,81 @@ You sign in twice: once to Microsoft Graph and once to Azure (`Connect-AzAccount
 - Classic subscription administrators are not included (retired by Microsoft).
 - Database users, Kubernetes RoleBindings and VM local administrators are not included.
 - The Activity Log keeps 90 days; very busy subscriptions are sampled (capped per subscription and flagged as a coverage gap).
+
+## PIM Phase 2 Assessment
+
+The Phase 2 assessment turns the Entra and Azure exports into the registers the PIM Phase 2 HLD and implementation runbook need. It reads only the Raw CSVs, so it runs offline and can be re-run whenever the role catalogue changes, without collecting again.
+
+`Invoke-FullPimReview.ps1` runs it automatically at the end of each run (output in `<run>\Phase2`). Use `-SkipPhase2Assessment` to turn it off and `-TenantShortName CON` to set the short name used in partnership reports.
+
+### What it produces
+
+| File | Purpose |
+| --- | --- |
+| `P2_PrivilegedIdentities.csv` | Every privileged identity: account type (CLAD, everyday, guest, generic/service, break-glass, workload), organisation, linked everyday identity, highest trust level, phishing-resistant method, P2 licence, issues |
+| `P2_AccessPaths.csv` | Every route from an identity to a role, Entra and Azure, with trust level: direct, PIM for Groups (eligible/active member), group member, nested group |
+| `P2_SelfApproval.csv` | People who can request with one identity and approve with another (HLD F01) |
+| `P2_ApproverGroups.csv` | Approver groups against HLD 7.6.3 (CLAD only, separate from the eligible population) |
+| `P2_GroupBundles.csv` | Groups that bundle roles, TL1 inside bundles, recommended split (HLD 7.6.1) |
+| `P2_TL1Paths.csv` | Every route to a TL1 role |
+| `P2_StandingAccess.csv` | Permanent active access at TL1-TL3 (read-only Azure roles excluded, as the HLD allows them) |
+| `P2_PolicyGaps.csv` | PIM role and group settings against the trust-level baseline |
+| `P2_RoleCatalogue.csv` | Every role in use with trust level and holders (runbook 1.2) |
+| `P2_MigrationWorksheet.csv` | One row per privileged path with a proposed action and blank Target path / Wave / Role owner / Decision columns |
+| `P2_ExceptionCandidates.csv` | Break-glass, generic accounts, standing TL1/TL2, non-human TL1 |
+| `P2_HldFindings.csv` | Status of F01-F15 in this tenant |
+| `P2_Maturity.csv` | Measured indicators for the HLD 6.7 maturity baseline |
+| `P2_Metrics.csv` / `.json` | Headline numbers used by the roll-up and diff |
+| `PIM_Phase2_Assessment_<tenant>.html` | The tenant report |
+
+### Running it on its own
+
+```powershell
+# Latest Entra run and latest Azure run under a tenant's output folder
+./Invoke-PimPhase2Assessment.ps1 -TenantFolder .\Output\Contoso -TenantShortName CON
+
+# Explicit folders, with an identity map
+./Invoke-PimPhase2Assessment.ps1 -EntraRunFolder .\Output\Contoso\Run-20261020-090000 `
+    -AzureRunFolder .\Output\Contoso\Run-20261020-090000\Azure -IdentityMapCsv .\Config\identity-map.local.csv
+```
+
+### Role catalogue and rules
+
+`Config/pim-phase2.catalogue.json` is a template. Copy it to `Config/pim-phase2.catalogue.local.json` (git-ignored) and put your programme's roles, domains and branding there; the scripts use the `.local.json` file when it exists. It holds:
+
+- `TrustLevelBaselines`: TL1-TL4 activation duration, approval, MFA / authentication context, justification, permanent active/eligible, review cycle (HLD 7.5).
+- `EntraRoles`: trust level per Entra role, with `Source` = `HLD`, `Proposed` or `Open`. Unlisted roles fall back to `EntraDefaultLevel`.
+- `AzureRoleFamilies`, `AzureLevelMatrix`, `AzureSensitiveScopes`: Azure classification by role family and scope (HLD 7.11.2). Write-capable roles on scopes whose names match identity, key, security, logging or automation patterns are raised to TL1.
+- `Identity`: CLAD UPN prefix and display-name patterns, other admin, generic and break-glass patterns.
+- `Organisations.Domains`: UPN and guest home domains mapped to organisation and type (Tenant, Operator, Partner, Supplier).
+
+Change the catalogue and re-run the assessment; no new collection is needed.
+
+### Linking CLAD and everyday identities
+
+Identities are linked by cleaned display name ("(Cloud Admin) Jane Smith" and "Jane Smith"), falling back to surname and initial from the CLAD UPN. Where that is not reliable, supply an identity map CSV with columns `PrivilegedUpn, EverydayUpn, Person` via `-IdentityMapCsv` (keep it as a `*.local.csv` file; it is git-ignored). The export only holds identities that have roles or approve, so a CLAD whose everyday account has neither shows as "No everyday identity in evidence". Self-approval checks are still complete, because every approver is in the evidence.
+
+### Comparing runs (runbook 5.5)
+
+```powershell
+./Compare-PimPhase2Assessment.ps1 -Baseline .\Output\Contoso\Run-20261020-090000\Phase2 -Current .\Output\Contoso\Run-20261201-090000\Phase2
+```
+
+Lists access paths added, removed or changed (state or trust level), policy gaps opened or closed, self-approval routes added or removed, and the change in each headline metric.
+
+### Partnership roll-up
+
+```powershell
+./Invoke-PimPartnershipRollup.ps1 -OutputRoot .\Output
+```
+
+Takes the latest assessment for each tenant and writes headline numbers and HLD finding status side by side, people with privilege in more than one tenant, all approver groups, and the role catalogue across tenants (for agreeing OD-02).
+
+### Limits
+
+- Monitoring (F10), password and recovery (F12), approver rota (F13) and device enforcement in practice (F06) cannot be measured from configuration; they need the runbook tests.
+- Purview role groups and billing roles are outside Entra and Azure RBAC and are not collected.
+- Trust levels marked `Proposed` or `Open` are drafts until agreed by the partners.
 
 ## Raw Evidence Exports
 
