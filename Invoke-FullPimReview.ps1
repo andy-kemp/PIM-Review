@@ -47,9 +47,9 @@ param(
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
-if (-not (Get-Module -Name PimReview.Common)) {
-    Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
-}
+# Always load the current copy of the module: a PowerShell window used for an earlier run may still hold an
+# older version, and the other scripts only import it when it is not already loaded.
+Import-Module -Name $commonModulePath -DisableNameChecking -Force -ErrorAction Stop -Verbose:$false
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Connect-GraphForPimReview.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimRoleAssignments.ps1')

@@ -74,6 +74,10 @@ function Write-AuditStep {
     Write-Host ('=' * 78) -ForegroundColor DarkCyan
 }
 
+# Unload any copy of the tool's module left in this PowerShell window by an earlier run, so the current
+# version is used.
+Remove-Module -Name PimReview.Common -Force -ErrorAction SilentlyContinue
+
 # ---- 1. Prerequisites ------------------------------------------------------------------------
 Write-AuditStep 'Checking prerequisites'
 

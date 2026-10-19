@@ -1447,6 +1447,20 @@ function Build-PimReviewWorkbook {
 
     $workbookPath = Join-Path -Path $OutputFolder -ChildPath $WorkbookFileName
 
+    # Final check that the Excel library really loads (Application Control can block EPPlus.dll even when
+    # ImportExcel is installed). If it does not, skip the workbook rather than fail the run.
+    if ($excelAvailable) {
+        try {
+            Import-Module ImportExcel -ErrorAction Stop -Verbose:$false
+            $excelProbe = New-Object -TypeName OfficeOpenXml.ExcelPackage
+            $excelProbe.Dispose()
+        }
+        catch {
+            Write-PimLog -Level WARN -Message "ImportExcel cannot be loaded on this device ($($_.Exception.Message))."
+            $excelAvailable = $false
+        }
+    }
+
     if (-not $excelAvailable) {
         Write-PimLog -Level WARN -Message 'Excel workbook skipped (ImportExcel is not installed or cannot be loaded on this device). CSV evidence and HTML reports are still produced.'
         return [pscustomobject]@{
