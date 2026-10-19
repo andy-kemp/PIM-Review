@@ -30,6 +30,19 @@ Also list access granted on individual resources, which can be slow in large est
 .PARAMETER UseDeviceCode
 Sign in to Azure with a device code (for sessions where a browser pop-up is not possible).
 
+.PARAMETER Tenant
+Short names of tenants in Config\audit-tenants.local.json to audit (for example SE, HIE).
+
+.PARAMETER All
+Audit every tenant in Config\audit-tenants.local.json.
+
+.EXAMPLE
+./Start-PimAudit.ps1
+Shows a menu of the tenants in Config\audit-tenants.local.json (or asks for a tenant if there is no list).
+
+.EXAMPLE
+./Start-PimAudit.ps1 -All
+
 .EXAMPLE
 ./Start-PimAudit.ps1 -TenantId contoso.onmicrosoft.com
 
@@ -38,6 +51,9 @@ Sign in to Azure with a device code (for sessions where a browser pop-up is not 
 #>
 [CmdletBinding()]
 param(
+    [string[]]$Tenant,
+    [switch]$All,
+    [string]$TenantListPath,
     [string[]]$TenantId,
     [string[]]$TenantShortName,
     [string]$OutputFolder,
@@ -111,9 +127,49 @@ else {
 }
 
 # ---- 2. Tenants ------------------------------------------------------------------------------
+# Tenants come from -TenantId, or from the saved tenant list (Config\audit-tenants.local.json, git-ignored):
+#   -All           every tenant in the list
+#   -Tenant SE,HIE  the tenants with those short names
+#   (nothing)       a menu to pick from
 if (-not $TenantId -or $TenantId.Count -eq 0) {
-    $entered = Read-Host 'Tenant ID or domain to audit (separate several with commas)'
-    $TenantId = @($entered.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ([string]::IsNullOrWhiteSpace($TenantListPath)) { $TenantListPath = Join-Path $PSScriptRoot 'Config\audit-tenants.local.json' }
+    $list = @()
+    if (Test-Path $TenantListPath) {
+        $list = @((Get-Content -Path $TenantListPath -Raw | ConvertFrom-Json).Tenants | Where-Object { $_.TenantId -and $_.TenantId -notmatch '^<' })
+    }
+    $picked = @()
+    if ($list.Count -gt 0) {
+        if ($All.IsPresent) { $picked = $list }
+        elseif ($Tenant) {
+            foreach ($t in $Tenant) {
+                $hit = @($list | Where-Object { $_.ShortName -eq $t -or $_.Name -eq $t })
+                if ($hit.Count -eq 0) { throw "Tenant '$t' is not in $TenantListPath. Known: $(@($list | ForEach-Object { $_.ShortName }) -join ', ')" }
+                $picked += $hit[0]
+            }
+        }
+        else {
+            Write-Host ''
+            Write-Host 'Tenants in your list:' -ForegroundColor Cyan
+            for ($i = 0; $i -lt $list.Count; $i++) { Write-Host ("  {0}. {1} ({2})  {3}" -f ($i + 1), $list[$i].Name, $list[$i].ShortName, $list[$i].TenantId) }
+            $choice = Read-Host 'Which to audit? Numbers separated by commas, A for all'
+            if ($choice -match '^(?i)a') { $picked = $list }
+            else {
+                foreach ($n in ($choice -split '[,\s]+' | Where-Object { $_ -match '^\d+$' })) {
+                    $idx = [int]$n - 1
+                    if ($idx -ge 0 -and $idx -lt $list.Count) { $picked += $list[$idx] }
+                }
+            }
+        }
+        $TenantId = @($picked | ForEach-Object { [string]$_.TenantId })
+        $TenantShortName = @($picked | ForEach-Object { if ($_.ShortName) { [string]$_.ShortName } else { [string]$_.Name } })
+    }
+    elseif ($All.IsPresent -or $Tenant) {
+        throw "No tenant list found at $TenantListPath. Copy Config\audit-tenants.example.json to that name and fill it in, or pass -TenantId."
+    }
+    else {
+        $entered = Read-Host 'Tenant ID or domain to audit (separate several with commas)'
+        $TenantId = @($entered.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
 }
 if (-not $TenantId -or $TenantId.Count -eq 0) { throw 'No tenant given.' }
 if ($TenantShortName -and $TenantShortName.Count -ne $TenantId.Count) {

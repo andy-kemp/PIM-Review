@@ -20,6 +20,16 @@ The implementation is read-only and idempotent for reporting.
 
 ## Quick Start: full PIM audit in one command
 
+Double-click `Run-PimAudit.cmd` (or run `pwsh ./Start-PimAudit.ps1`). With a tenant list saved in `Config/audit-tenants.local.json` (copy `Config/audit-tenants.example.json`; the file is git-ignored) it shows a menu of tenants; otherwise it asks for a tenant ID or domain.
+
+```powershell
+pwsh ./Start-PimAudit.ps1            # menu of tenants from the list
+pwsh ./Start-PimAudit.ps1 -All       # every tenant in the list
+pwsh ./Start-PimAudit.ps1 -Tenant SE # one tenant from the list by short name
+```
+
+Or name tenants directly:
+
 ```powershell
 # One tenant
 pwsh ./Start-PimAudit.ps1 -TenantId contoso.onmicrosoft.com
@@ -49,6 +59,7 @@ Settings come from `Config/pim-review.config.local.json` when it exists (git-ign
 - `Get-AzureRbacReview.ps1` (Azure RBAC review; runs on its own or from `Invoke-FullPimReview.ps1`)
 - `Get-AzureRbacInsights.ps1` (Azure review collectors: sign-in, Activity Log, Lighthouse, Key Vault/storage/SQL/AKS, workload credentials)
 - `New-AzureRbacReport.ps1` (Azure review HTML/Markdown report)
+- `Run-PimAudit.cmd` (double-click launcher for Start-PimAudit.ps1)
 - `Start-PimAudit.ps1` (one command: full Entra, Azure and Phase 2 audit for one or more tenants)
 - `Invoke-FullPimReview.ps1`
 - `Invoke-PimPhase2Assessment.ps1` (PIM Phase 2 assessment over a tenant's Entra and Azure exports; runs offline)

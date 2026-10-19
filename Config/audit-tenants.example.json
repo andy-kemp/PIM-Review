@@ -1,0 +1,7 @@
+{
+  "_about": "Copy to Config/audit-tenants.local.json (git-ignored) and fill in. Start-PimAudit.ps1 offers these tenants in a menu, or runs them with -All or -Tenant <ShortName>.",
+  "Tenants": [
+    { "Name": "Contoso", "ShortName": "CON", "TenantId": "contoso.onmicrosoft.com" },
+    { "Name": "Fabrikam", "ShortName": "FAB", "TenantId": "<tenant id or domain>" }
+  ]
+}
