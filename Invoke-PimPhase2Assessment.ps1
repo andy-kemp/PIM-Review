@@ -51,6 +51,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
     Import-Module -Name $commonModulePath -DisableNameChecking -ErrorAction Stop -Verbose:$false
 }
 . (Join-Path -Path $PSScriptRoot -ChildPath 'New-PimPhase2Report.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimAuditControls.ps1')
 
 # ---------------------------------------------------------------------------------------------
 # Helpers
@@ -188,6 +189,7 @@ function Invoke-PimPhase2Assessment {
     $caPolicies = @(Import-P2Csv -Folder $entraRaw -Name 'ConditionalAccessPolicies.csv')
     $identityContext = @(Import-P2Csv -Folder $entraRaw -Name 'PrivilegedIdentityContext.csv')
     $authMethods = @(Import-P2Csv -Folder $entraRaw -Name 'AuthMethodRegistration.csv')
+    $accessReviews = @(Import-P2Csv -Folder $entraRaw -Name 'AccessReviews.beta.csv')
 
     $azAccess = @(Import-P2Csv -Folder $azureRaw -Name 'AzureUserAccess.csv')
     $azAssignments = @(Import-P2Csv -Folder $azureRaw -Name 'AzureRoleAssignments.csv')
@@ -509,7 +511,7 @@ function Invoke-PimPhase2Assessment {
     foreach ($m in $pimGroups) {
         if ($m.AccessId -and $m.AccessId -ne 'member') { continue }
         if ([string]$m.PrincipalType -eq 'Group') { continue }
-        $null = $memberships.Add([pscustomobject]@{ GroupId = $m.GroupId.ToLowerInvariant(); MemberId = $m.PrincipalId; State = $m.AssignmentState; Permanent = (Test-P2True $m.IsPermanent) -or [string]::IsNullOrWhiteSpace($m.EndDateTimeUtc); PathType = $(if ($m.AssignmentState -eq 'Eligible') { 'PIM for Groups (eligible member)' } else { 'PIM for Groups (active member)' }) })
+        $null = $memberships.Add([pscustomobject]@{ GroupId = $m.GroupId.ToLowerInvariant(); MemberId = $m.PrincipalId; State = $m.AssignmentState; Permanent = (Test-P2True $m.IsPermanent) -or [string]::IsNullOrWhiteSpace($m.EndDateTimeUtc); End = $m.EndDateTimeUtc; PathType = $(if ($m.AssignmentState -eq 'Eligible') { 'PIM for Groups (eligible member)' } else { 'PIM for Groups (active member)' }) })
     }
     foreach ($m in $groupMembers) {
         if ([string]$m.MemberType -eq 'Group' -or (Test-P2True $m.IsNestedGroup)) { continue }
@@ -530,7 +532,8 @@ function Invoke-PimPhase2Assessment {
             }
             $membershipSeen[$key] = $true
             $permanent = $m.Permanent -and $gr.Permanent
-            & $addPath $m.MemberId 'Entra' $gr.Role 'Directory' 'Directory' $m.PathType $gr.GroupName $m.GroupId $m.State $gr.State $permanent $gr.End $gr.Tl $null
+            $pathEnd = if ($m.PSObject.Properties['End'] -and $m.End) { $m.End } else { $gr.End }
+            & $addPath $m.MemberId 'Entra' $gr.Role 'Directory' 'Directory' $m.PathType $gr.GroupName $m.GroupId $m.State $gr.State $permanent $pathEnd $gr.Tl $null
         }
     }
 
@@ -1036,7 +1039,28 @@ function Invoke-PimPhase2Assessment {
         EligibleSharePercent          = $eligibleShare
     }
 
+    # ---- Control checks and NCSC CAF benchmark -------------------------------------------------
+    $audit = Get-PimAuditControls -Ctx @{
+        PrivPaths = $privPaths; Identities = $identityRows; PolicyByRole = $policyByRole; Catalogue = $cat
+        Catalogue_InUse = $catalogueRows; HasEntra = $hasEntra; HasAzure = $hasAzure
+        GaPeople = $gaPeople; Tl1InBundles = $tl1InBundles; SelfApprovalPeople = $selfApprovalPeople
+        SelfApprovalTl1People = $selfApprovalTl1People; ApproverEveryday = $approverEveryday
+        CaPolicies = $caPolicies; AccessReviews = $accessReviews; NoP2 = $noP2; HasLicences = ($licences.Count -gt 0)
+        AzureAccess = $azAccess; AzStandingTl1 = $azStandingTl1; AzRoot = $azRoot
+    }
+    foreach ($row in @($audit.Controls) + @($audit.Caf) + @($audit.Ssa) + @($audit.CoverageEntra) + @($audit.CoverageAzure) + @($audit.Oversubscribed)) {
+        if ($row) { Add-Member -InputObject $row -NotePropertyName Tenant -NotePropertyValue $TenantShortName -Force }
+    }
+    Add-Member -InputObject $metrics -NotePropertyName ControlsGood -NotePropertyValue @($audit.Controls | Where-Object Result -eq 'Good').Count
+    Add-Member -InputObject $metrics -NotePropertyName ControlsPartial -NotePropertyValue @($audit.Controls | Where-Object Result -eq 'Partial').Count
+    Add-Member -InputObject $metrics -NotePropertyName ControlsWeak -NotePropertyValue @($audit.Controls | Where-Object Result -eq 'Weak').Count
+    foreach ($c in $audit.Caf) { Add-Member -InputObject $metrics -NotePropertyName ("Caf_" + ($c.Outcome -replace '\.', '')) -NotePropertyValue $c.Rating }
+
     # ---- Export ------------------------------------------------------------------------------
+    Export-PimData -Data $audit.Controls -CsvPath (Join-Path $OutputFolder 'P2_Controls.csv')
+    Export-PimData -Data $audit.Caf -CsvPath (Join-Path $OutputFolder 'P2_NcscCafBenchmark.csv')
+    Export-PimData -Data @($audit.CoverageEntra + $audit.CoverageAzure) -CsvPath (Join-Path $OutputFolder 'P2_PimCoverage.csv')
+    Export-PimData -Data $audit.Oversubscribed -CsvPath (Join-Path $OutputFolder 'P2_OversubscribedRoles.csv')
     Export-PimData -Data $identityRows -CsvPath (Join-Path $OutputFolder 'P2_PrivilegedIdentities.csv')
     Export-PimData -Data @($paths | Sort-Object Person, Plane, Role) -CsvPath (Join-Path $OutputFolder 'P2_AccessPaths.csv')
     Export-PimData -Data $catalogueRows -CsvPath (Join-Path $OutputFolder 'P2_RoleCatalogue.csv')
@@ -1069,6 +1093,9 @@ function Invoke-PimPhase2Assessment {
         Catalogue       = $catalogueRows
         Exceptions      = @($exceptions)
         Migration       = $migration
+        Audit           = $audit
+        PrivPathsHuman  = @($privPaths | Where-Object { $_.AccountType -in @('CLAD', 'Other admin account', 'Everyday', 'Guest', 'Generic/Service') })
+        Identity        = $ident
         HasEntra        = $hasEntra
         HasAzure        = $hasAzure
         EntraRun        = $metrics.EntraRun

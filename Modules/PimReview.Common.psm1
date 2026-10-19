@@ -355,11 +355,30 @@ function Export-PimData {
     }
 }
 
-function Test-ImportExcelAvailable {
-    [CmdletBinding()]
-    param()
+$script:ImportExcelUsable = $null
 
-    return [bool](Get-Module -ListAvailable -Name ImportExcel)
+function Test-ImportExcelAvailable {
+    <#
+    Returns $true only when ImportExcel is installed AND its EPPlus library can actually be loaded.
+    Application Control (WDAC / AppLocker) often blocks EPPlus.dll on managed devices; in that case the
+    workbook is skipped and the CSV and HTML outputs are still produced.
+    #>
+    [CmdletBinding()]
+    param([switch]$Refresh)
+
+    if ($null -ne $script:ImportExcelUsable -and -not $Refresh.IsPresent) { return $script:ImportExcelUsable }
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) { return $false }
+    try {
+        Import-Module ImportExcel -ErrorAction Stop -Verbose:$false
+        $probe = New-Object -TypeName OfficeOpenXml.ExcelPackage
+        $probe.Dispose()
+        $script:ImportExcelUsable = $true
+    }
+    catch {
+        $script:ImportExcelUsable = $false
+        Write-PimLog -Level WARN -Message "Excel workbook disabled: ImportExcel is installed but cannot be loaded on this device ($($_.Exception.Message)). This is usually Application Control blocking EPPlus.dll. CSV and HTML reports are still produced."
+    }
+    return $script:ImportExcelUsable
 }
 
 function Get-SafeFileName {

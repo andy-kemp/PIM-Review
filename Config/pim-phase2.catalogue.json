@@ -51,6 +51,11 @@
       "AssignmentPattern": "Standing read access acceptable"
     }
   },
+  "HolderGuidance": {
+    "_about": "Guide maximum number of people per role used for the over-subscription check. Global Administrator always uses Microsoft's fewer-than-five guidance; Azure subscription owners use Microsoft's maximum of three.",
+    "TL1": 5,
+    "TL2": 10
+  },
   "EntraRoles": {
     "Global Administrator": {
       "Level": "TL1",

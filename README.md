@@ -28,7 +28,7 @@ pwsh ./Start-PimAudit.ps1 -TenantId contoso.onmicrosoft.com
 pwsh ./Start-PimAudit.ps1 -TenantId tenant1.onmicrosoft.com, tenant2.onmicrosoft.com -TenantShortName T1, T2
 ```
 
-`Start-PimAudit.ps1` checks and installs the modules it needs, then for each tenant runs everything with every option on: the Entra PIM review, the Azure RBAC review and the PIM Phase 2 assessment. You sign in twice per tenant (Microsoft Graph, then Azure). Use an account with Global Reader in Entra and Reader at the tenant root management group in Azure. When it finishes it lists the reports and opens the Phase 2 assessment (or the partnership roll-up when there is more than one tenant).
+`Start-PimAudit.ps1` checks and installs the modules it needs, then for each tenant runs everything with every option on: the Entra PIM review, the Azure RBAC review and the privileged access audit (PIM Phase 2 assessment, benchmarked against NCSC CAF B2). You sign in twice per tenant (Microsoft Graph, then Azure). Use an account with Global Reader in Entra and Reader at the tenant root management group in Azure. When it finishes it lists the reports and opens the Phase 2 assessment (or the partnership roll-up when there is more than one tenant).
 
 Options: `-SkipAzure` (Entra only), `-IncludeResourceLevelAccess` (also list access on individual Azure resources; slower), `-UseDeviceCode` (Azure device-code sign-in), `-NoOpen`. A failed tenant does not stop the others.
 
@@ -311,7 +311,15 @@ The Phase 2 assessment turns the Entra and Azure exports into the registers the 
 | `P2_HldFindings.csv` | Status of F01-F15 in this tenant |
 | `P2_Maturity.csv` | Measured indicators for the HLD 6.7 maturity baseline |
 | `P2_Metrics.csv` / `.json` | Headline numbers used by the roll-up and diff |
-| `PIM_Phase2_Assessment_<tenant>.html` | The tenant report |
+| `P2_Controls.csv` | Every control check: result (Good / Partial / Weak / Not assessed), severity, finding, why it matters, what good looks like, recommended action, NCSC CAF outcome and NCSC principle |
+| `P2_NcscCafBenchmark.csv` | Indicative rating for NCSC CAF 4.0 outcomes B2.a-B2.d |
+| `P2_PimCoverage.csv` | Per role (and Azure scope): people who reach it just-in-time, time-bound or permanently |
+| `P2_OversubscribedRoles.csv` | People per high-impact role against a guide (Microsoft: Global Administrator fewer than 5, subscription owners at most 3; catalogue guide for other TL1/TL2 roles) |
+| `Privileged_Access_Audit_<tenant>.html` | The tenant report: at a glance, what is working well, what needs attention, NCSC benchmark, where PIM is and is not used, over-subscribed roles, detailed evidence |
+
+### The report
+
+`Privileged_Access_Audit_<tenant>.html` is written for a non-specialist reader. It opens with a plain-English verdict and headline numbers, lists the controls that are working well and those that need attention (each with why it matters, what good looks like and the recommended action), and benchmarks the tenant against the NCSC Cyber Assessment Framework (CAF 4.0, Principle B2: identity and access control) and the NCSC secure system administration principles. CAF ratings are indicative: they use configuration evidence only, so indicators that need process evidence (monitoring, review records, joiners/movers/leavers) are marked Not assessed.
 
 ### Running it on its own
 
@@ -359,6 +367,7 @@ Takes the latest assessment for each tenant and writes headline numbers and HLD 
 ### Limits
 
 - Monitoring (F10), password and recovery (F12), approver rota (F13) and device enforcement in practice (F06) cannot be measured from configuration; they need the runbook tests.
+- The Excel workbook is optional. On devices where Application Control blocks the ImportExcel library (EPPlus.dll), the run continues and produces the HTML reports and CSV evidence.
 - Purview role groups and billing roles are outside Entra and Azure RBAC and are not collected.
 - Trust levels marked `Proposed` or `Open` are drafts until agreed by the partners.
 

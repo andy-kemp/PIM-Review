@@ -1413,7 +1413,8 @@ function Build-PimReviewWorkbook {
 
     $excelAvailable = Test-ImportExcelAvailable
 
-    if (-not $excelAvailable) {
+    $excelInstalled = [bool](Get-Module -ListAvailable -Name ImportExcel)
+    if (-not $excelAvailable -and -not $excelInstalled) {
         $shouldInstall = $InstallImportExcelIfMissing.IsPresent
 
         if ((-not $shouldInstall) -and $PromptToInstallImportExcel.IsPresent) {
@@ -1432,7 +1433,7 @@ function Build-PimReviewWorkbook {
             try {
                 Write-PimLog -Message 'Installing ImportExcel module for current user.'
                 Install-Module ImportExcel -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-                $excelAvailable = Test-ImportExcelAvailable
+                $excelAvailable = Test-ImportExcelAvailable -Refresh
             }
             catch {
                 Write-PimLog -Level WARN -Message "ImportExcel installation failed: $($_.Exception.Message)"
@@ -1447,7 +1448,7 @@ function Build-PimReviewWorkbook {
     $workbookPath = Join-Path -Path $OutputFolder -ChildPath $WorkbookFileName
 
     if (-not $excelAvailable) {
-        Write-PimLog -Level WARN -Message 'ImportExcel module is not installed. Workbook generation skipped; CSV evidence is still available.'
+        Write-PimLog -Level WARN -Message 'Excel workbook skipped (ImportExcel is not installed or cannot be loaded on this device). CSV evidence and HTML reports are still produced.'
         return [pscustomobject]@{
             WorkbookCreated = $false
             WorkbookPath    = $null

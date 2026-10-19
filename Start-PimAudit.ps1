@@ -66,8 +66,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 }
 
 $required = @(
-    @{ Name = 'Microsoft.Graph.Authentication'; Install = 'Microsoft.Graph.Authentication'; Why = 'Microsoft Graph sign-in' },
-    @{ Name = 'ImportExcel'; Install = 'ImportExcel'; Why = 'Excel workbook' }
+    @{ Name = 'Microsoft.Graph.Authentication'; Install = 'Microsoft.Graph.Authentication'; Why = 'Microsoft Graph sign-in' }
 )
 if (-not $SkipAzure.IsPresent) { $required += @{ Name = 'Az.Accounts'; Install = 'Az.Accounts'; Why = 'Azure sign-in' } }
 
@@ -84,6 +83,32 @@ if ($missing.Count -gt 0) {
     }
 }
 Write-Host 'Modules OK.' -ForegroundColor Green
+
+# The Excel workbook is optional. Application Control on managed devices often blocks the EPPlus library
+# that ImportExcel uses; the audit then carries on and produces the HTML reports and CSV evidence.
+$excelNote = $null
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+    $answer = Read-Host 'Optional: install ImportExcel for an Excel workbook as well as the HTML reports? (Y/N)'
+    if ($answer -match '^(?i)y') {
+        try { Install-Module -Name ImportExcel -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop }
+        catch { Write-Host "ImportExcel could not be installed: $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+}
+if (Get-Module -ListAvailable -Name ImportExcel) {
+    try {
+        Import-Module ImportExcel -ErrorAction Stop
+        $probe = New-Object -TypeName OfficeOpenXml.ExcelPackage
+        $probe.Dispose()
+        Write-Host 'Excel workbook: available.' -ForegroundColor Green
+    }
+    catch {
+        $excelNote = 'Excel workbook not produced: this device blocks the ImportExcel library (usually Application Control). Open the CSV files in Excel instead.'
+        Write-Host $excelNote -ForegroundColor Yellow
+    }
+}
+else {
+    $excelNote = 'Excel workbook not produced: ImportExcel is not installed.'
+}
 
 # ---- 2. Tenants ------------------------------------------------------------------------------
 if (-not $TenantId -or $TenantId.Count -eq 0) {
@@ -110,7 +135,8 @@ $set = {
 & $set 'IncludeLicenseDetails' $true
 & $set 'IncludePimForGroups' $true
 & $set 'IncludeAuthStrength' $true
-& $set 'InstallImportExcelIfMissing' $true
+& $set 'InstallImportExcelIfMissing' $false
+& $set 'PromptToInstallImportExcel' $false
 & $set 'IncludeAzureRbac' (-not $SkipAzure.IsPresent)
 & $set 'AzureIncludeResourceLevelAccess' ([bool]$IncludeResourceLevelAccess.IsPresent)
 & $set 'AzureUseDeviceAuthentication' ([bool]$UseDeviceCode.IsPresent)
@@ -174,12 +200,13 @@ Write-AuditStep 'Audit finished'
 foreach ($r in $results) {
     $colour = if ($r.Status -eq 'Completed') { 'Green' } else { 'Red' }
     Write-Host "$($r.Tenant): $($r.Status) in $($r.Minutes) min" -ForegroundColor $colour
-    if ($r.Phase2Report) { Write-Host "  PIM Phase 2 assessment : $($r.Phase2Report)" }
+    if ($r.Phase2Report) { Write-Host "  Privileged access audit: $($r.Phase2Report)" }
     if ($r.EntraReport) { Write-Host "  Entra PIM review       : $($r.EntraReport)" }
     if ($r.AzureReport) { Write-Host "  Azure RBAC review      : $($r.AzureReport)" }
     if ($r.Error) { Write-Host "  Error: $($r.Error)" -ForegroundColor Red }
 }
 if ($rollup -and $rollup.ReportPath) { Write-Host ''; Write-Host "Partnership roll-up: $($rollup.ReportPath)" -ForegroundColor Green }
+if ($excelNote) { Write-Host ''; Write-Host $excelNote -ForegroundColor Yellow }
 Write-Host ''
 Write-Host "Everything is under $outputRoot. It holds client data: keep it out of git and share it only through approved channels." -ForegroundColor Yellow
 
