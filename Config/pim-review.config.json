@@ -23,5 +23,10 @@
   "ExpectedLicenseSkuPartNumbers": [
     "AAD_PREMIUM_P2",
     "SPE_E5"
-  ]
+  ],
+  "IncludeAzureRbac": true,
+  "AzureSubscriptionIds": [],
+  "AzureMaxOwnersPerSubscription": 3,
+  "AzureIncludeResourceLevelAccess": false,
+  "AzureUseDeviceAuthentication": false
 }

@@ -10,6 +10,9 @@ Orchestrates all reporting scripts for:
 - User licensing details with fallback mapping
 - Approval settings and optional beta-derived approval history
 - Derived findings and review workbook generation
+- Optional Azure RBAC review (-IncludeAzureRbac): every Azure role assignment, active and PIM-eligible,
+  from the tenant root to individual resources, with groups expanded to users
+
 
 This script is read-only. It does not modify tenant configuration.
 
@@ -18,6 +21,9 @@ This script is read-only. It does not modify tenant configuration.
 
 .EXAMPLE
 ./Invoke-FullPimReview.ps1 -ConfigPath .\Config\pim-review.config.json -OutputFolder .\Output\Run-Manual -IncludeTransitiveMembers
+
+.EXAMPLE
+./Invoke-FullPimReview.ps1 -ConfigPath .\Config\pim-review.config.json -IncludeAzureRbac
 #>
 [CmdletBinding()]
 param(
@@ -31,7 +37,10 @@ param(
     [switch]$IncludeAuthStrength,
     [switch]$InstallImportExcelIfMissing,
     [switch]$PromptToInstallImportExcel,
-    [switch]$DisableTranscript
+    [switch]$DisableTranscript,
+    [switch]$IncludeAzureRbac,
+    [string[]]$AzureSubscriptionId,
+    [switch]$IncludeAzureResourceLevelAccess
 )
 
 $commonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules\PimReview.Common.psm1'
@@ -52,6 +61,7 @@ if (-not (Get-Module -Name PimReview.Common)) {
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimIdentityAnalysis.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Get-PimApproverAnalysis.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-PimReviewWorkbook.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Get-AzureRbacReview.ps1')
 
 function Get-PimConfig {
     [CmdletBinding()]
@@ -104,6 +114,11 @@ function Get-PimConfig {
         ExpectedLicenseSkuPartNumbers = @($cfg.ExpectedLicenseSkuPartNumbers)
         NamingCompliancePrefix        = if ($null -ne $cfg.NamingCompliancePrefix -and -not [string]::IsNullOrWhiteSpace($cfg.NamingCompliancePrefix)) { [string]$cfg.NamingCompliancePrefix } else { 'CLAD_' }
         IncludeAuthStrength           = if ($null -ne $cfg.IncludeAuthStrength) { [bool]$cfg.IncludeAuthStrength } else { $false }
+        IncludeAzureRbac              = if ($null -ne $cfg.PSObject.Properties['IncludeAzureRbac']) { [bool]$cfg.IncludeAzureRbac } else { $false }
+        AzureSubscriptionIds          = if ($null -ne $cfg.PSObject.Properties['AzureSubscriptionIds']) { @($cfg.AzureSubscriptionIds | Where-Object { $_ }) } else { @() }
+        AzureMaxOwnersPerSubscription = if ($null -ne $cfg.PSObject.Properties['AzureMaxOwnersPerSubscription']) { [int]$cfg.AzureMaxOwnersPerSubscription } else { 3 }
+        AzureIncludeResourceLevelAccess = if ($null -ne $cfg.PSObject.Properties['AzureIncludeResourceLevelAccess']) { [bool]$cfg.AzureIncludeResourceLevelAccess } else { $false }
+        AzureUseDeviceAuthentication  = if ($null -ne $cfg.PSObject.Properties['AzureUseDeviceAuthentication']) { [bool]$cfg.AzureUseDeviceAuthentication } else { $false }
     }
 }
 
@@ -1813,7 +1828,10 @@ function Invoke-FullPimReview {
         [switch]$InstallImportExcelIfMissing,
         [switch]$PromptToInstallImportExcel,
         [switch]$DisableTranscript,
-        [switch]$ForceReConnect
+        [switch]$ForceReConnect,
+        [switch]$IncludeAzureRbac,
+        [string[]]$AzureSubscriptionId,
+        [switch]$IncludeAzureResourceLevelAccess
     )
 
     $config = Get-PimConfig -ConfigPath $ConfigPath
@@ -1857,6 +1875,20 @@ function Invoke-FullPimReview {
         $config.PromptToInstallImportExcel = $true
     }
 
+    if ($IncludeAzureRbac.IsPresent) {
+        $config.IncludeAzureRbac = $true
+    }
+
+    if ($IncludeAzureResourceLevelAccess.IsPresent) {
+        $config.IncludeAzureRbac = $true
+        $config.AzureIncludeResourceLevelAccess = $true
+    }
+
+    if ($PSBoundParameters.ContainsKey('AzureSubscriptionId')) {
+        $config.IncludeAzureRbac = $true
+        $config.AzureSubscriptionIds = @($AzureSubscriptionId)
+    }
+
     $runFolderName = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $targetRoot = Ensure-Directory -Path $config.OutputFolder
 
@@ -1873,6 +1905,7 @@ function Invoke-FullPimReview {
             -IncludeApprovalHistory:$config.IncludeApprovalHistory `
             -IncludePimForGroups:$config.IncludePimForGroups `
             -IncludeAuthStrength:($IncludeAuthStrength.IsPresent -or $config.IncludeAuthStrength) `
+            -IncludeAzureRbac:$config.IncludeAzureRbac `
             -ForceReConnect:$ForceReConnect
 
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
@@ -2071,6 +2104,40 @@ function Invoke-FullPimReview {
         }
         $workbookResult = Build-PimReviewWorkbook @wbSplat
 
+        # Azure RBAC review: role assignments across management groups, subscriptions, resource groups
+        # and resources. Runs after the Entra workbook exists so its sheets are appended to the same file.
+        $azureRbacResult = $null
+        if ($config.IncludeAzureRbac) {
+            Write-PimLog -Message 'Running Azure RBAC review.'
+            try {
+                $azTenantId = $config.TenantId
+                if ($graphContext -and $graphContext.TenantId) { $azTenantId = [string]$graphContext.TenantId }
+
+                $azSplat = @{
+                    TenantId                   = $azTenantId
+                    OutputFolder               = (Join-Path -Path $runOutputFolder -ChildPath 'Azure')
+                    TenantLabel                = $tenantProfile.TenantLabel
+                    MaxOwnersPerSubscription   = [int]$config.AzureMaxOwnersPerSubscription
+                    IncludeResourceLevelAccess = [bool]$config.AzureIncludeResourceLevelAccess
+                    IncludePimForGroups        = [bool]$config.IncludePimForGroups
+                    UseDeviceAuthentication    = [bool]$config.AzureUseDeviceAuthentication
+                    SkipGraphConnect           = $true
+                    ForceReConnect             = [bool]$ForceReConnect
+                }
+                if (@($config.AzureSubscriptionIds).Count -gt 0) {
+                    $azSplat.SubscriptionId = @($config.AzureSubscriptionIds)
+                }
+                if ($workbookResult -and $workbookResult.WorkbookCreated -and $workbookResult.WorkbookPath) {
+                    $azSplat.WorkbookPath = $workbookResult.WorkbookPath
+                }
+
+                $azureRbacResult = Get-AzureRbacReview @azSplat
+            }
+            catch {
+                Write-PimLog -Level WARN -Message "Azure RBAC review failed and will be skipped. Error: $($_.Exception.Message)"
+            }
+        }
+
         $runMeta = [pscustomobject]@{
             RunUtc                  = (Get-Date).ToUniversalTime().ToString('o')
             OutputFolder            = $runOutputFolder
@@ -2116,6 +2183,12 @@ function Invoke-FullPimReview {
         Add-Member -InputObject $runMeta.Counts -NotePropertyName RoleElevationMatrix  -NotePropertyValue @($roleElevationMatrix).Count -Force
         Add-Member -InputObject $runMeta.Counts -NotePropertyName ApprovalAnalysis     -NotePropertyValue @($pimData.ApprovalAnalysis).Count  -Force
         Add-Member -InputObject $runMeta.Counts -NotePropertyName ApproverGroups       -NotePropertyValue @($pimData.ApproverGroupRoleMap).Count  -Force
+        Add-Member -InputObject $runMeta -NotePropertyName IncludeAzureRbac -NotePropertyValue ([bool]$config.IncludeAzureRbac) -Force
+        if ($azureRbacResult) {
+            Add-Member -InputObject $runMeta -NotePropertyName AzureRbacSummaryHtmlPath -NotePropertyValue $azureRbacResult.SummaryHtmlPath -Force
+            Add-Member -InputObject $runMeta -NotePropertyName AzureRbacOutputFolder -NotePropertyValue $azureRbacResult.OutputFolder -Force
+            Add-Member -InputObject $runMeta -NotePropertyName AzureRbacCounts -NotePropertyValue $azureRbacResult.Counts -Force
+        }
 
         $summaryInfo = New-PimSummaryReport `
             -OutputFolder      $runOutputFolder `

@@ -16,6 +16,7 @@ Scopes rationale:
 - Conditional Access posture: Policy.Read.All
 - Access reviews coverage: AccessReview.Read.All
 - Workload identity hygiene: Application.Read.All
+- Azure RBAC review (principal resolution, group expansion): User.Read.All, Group.Read.All, Application.Read.All
 
 .EXAMPLE
 ./Connect-GraphForPimReview.ps1 -IncludeLicenseDetails -IncludeApprovalHistory -Verbose
@@ -30,6 +31,8 @@ param(
     [switch]$IncludeLicenseDetails,
     [switch]$IncludeApprovalHistory,
     [switch]$IncludePimForGroups,
+    [switch]$IncludeAuthStrength,
+    [switch]$IncludeAzureRbac,
     [switch]$ForceReConnect
 )
 
@@ -44,7 +47,8 @@ function Get-DefaultPimScopes {
         [switch]$IncludeLicenseDetails,
         [switch]$IncludeApprovalHistory,
         [switch]$IncludePimForGroups,
-        [switch]$IncludeAuthStrength
+        [switch]$IncludeAuthStrength,
+        [switch]$IncludeAzureRbac
     )
 
     $scopeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -79,6 +83,13 @@ function Get-DefaultPimScopes {
         $null = $scopeSet.Add('Reports.Read.All')
     }
 
+    if ($IncludeAzureRbac) {
+        # Resolve Azure role assignment principals and expand groups to their members.
+        $null = $scopeSet.Add('User.Read.All')
+        $null = $scopeSet.Add('Group.Read.All')
+        $null = $scopeSet.Add('Application.Read.All')
+    }
+
     return @($scopeSet)
 }
 
@@ -91,6 +102,7 @@ function Connect-GraphForPimReview {
         [switch]$IncludeApprovalHistory,
         [switch]$IncludePimForGroups,
         [switch]$IncludeAuthStrength,
+        [switch]$IncludeAzureRbac,
         [switch]$ForceReConnect
     )
 
@@ -102,7 +114,7 @@ function Connect-GraphForPimReview {
         $Scopes
     }
     else {
-        Get-DefaultPimScopes -IncludeLicenseDetails:$IncludeLicenseDetails -IncludeApprovalHistory:$IncludeApprovalHistory -IncludePimForGroups:$IncludePimForGroups -IncludeAuthStrength:$IncludeAuthStrength
+        Get-DefaultPimScopes -IncludeLicenseDetails:$IncludeLicenseDetails -IncludeApprovalHistory:$IncludeApprovalHistory -IncludePimForGroups:$IncludePimForGroups -IncludeAuthStrength:$IncludeAuthStrength -IncludeAzureRbac:$IncludeAzureRbac
     }
 
     $currentContext = Get-MgContext -ErrorAction SilentlyContinue
