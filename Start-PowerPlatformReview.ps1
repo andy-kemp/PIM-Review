@@ -44,7 +44,24 @@ if ($missing.Count) {
 # Tenants (same list as Start-PimAudit.ps1)
 if (-not $TenantId) {
     $listPath = Join-Path $PSScriptRoot 'Config\audit-tenants.local.json'
-    if (-not (Test-Path $listPath)) { throw "No tenant list at $listPath. Run Start-PimAudit.ps1 once to create it, or pass -TenantId." }
+    if (-not (Test-Path $listPath)) {
+        # First run: build the tenant list (shared with Start-PimAudit.ps1) and save it for next time.
+        Write-Host "No tenant list yet. Enter the tenants to review; it is saved to $listPath (git-ignored)." -ForegroundColor Cyan
+        Write-Host 'Leave the tenant empty when you have finished.'
+        $newList = New-Object System.Collections.ArrayList
+        while ($true) {
+            $tid = Read-Host "Tenant $($newList.Count + 1) - tenant ID or domain (for example contoso.onmicrosoft.com)"
+            if ([string]::IsNullOrWhiteSpace($tid)) { break }
+            $name = Read-Host '  Name (for example Contoso)'
+            $short = Read-Host '  Short name for reports (for example CON)'
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $tid.Trim() }
+            if ([string]::IsNullOrWhiteSpace($short)) { $short = ($name -replace '[^A-Za-z0-9]', '') }
+            $null = $newList.Add([pscustomobject]@{ Name = $name.Trim(); ShortName = $short.Trim(); TenantId = $tid.Trim() })
+        }
+        if ($newList.Count -eq 0) { throw 'No tenants entered.' }
+        [pscustomobject]@{ _about = 'Tenants for Start-PimAudit.ps1 and Start-PowerPlatformReview.ps1. Local only (git-ignored).'; Tenants = @($newList) } | ConvertTo-Json -Depth 5 | Out-File -FilePath $listPath -Encoding UTF8
+        Write-Host "Saved $($newList.Count) tenant(s)." -ForegroundColor Green
+    }
     $list = @((Get-Content $listPath -Raw | ConvertFrom-Json).Tenants | Where-Object { $_.TenantId -and $_.TenantId -notmatch '^<' })
     $picked = @()
     if ($All) { $picked = $list }
