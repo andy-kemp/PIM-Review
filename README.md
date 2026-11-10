@@ -49,7 +49,8 @@ Settings come from `Config/pim-review.config.local.json` when it exists (git-ign
 A separate run that covers Power Platform. It shows who holds the admin roles, who is System Administrator in each environment, and which flows could break when admin rights move to CLAD accounts. It works in Windows PowerShell 5.1 and PowerShell 7, and uses the same modules and tenant list as the PIM audit (Microsoft.Graph.Authentication, Az.Accounts).
 
 ```powershell
-Run-PowerPlatformReview.cmd                 # double-click: menu of tenants from Config\audit-tenants.local.json
+.\Start-PowerPlatformReview.ps1 -TenantId sds.co.uk, scotent.co.uk   # name the tenants; short names worked out (SDS, SE)
+Run-PowerPlatformReview.cmd                 # double-click: asks for tenants, or shows the saved list
 .\Start-PowerPlatformReview.ps1 -All        # every tenant, plus the partnership roll-up
 .\Start-PowerPlatformReview.ps1 -Tenant SE
 .\Get-PowerPlatformReview.ps1 -TenantId contoso.onmicrosoft.com -TenantShortName CON   # one tenant

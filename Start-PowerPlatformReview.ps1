@@ -12,7 +12,8 @@ For Dataverse role holders and flows you also need read access in each environme
 self-elevating to System Administrator); environments without it are reported as a coverage gap.
 
 .EXAMPLE
-.\Start-PowerPlatformReview.ps1            # menu of tenants from Config\audit-tenants.local.json
+.\Start-PowerPlatformReview.ps1 -TenantId sds.co.uk, scotent.co.uk, hient.co.uk, sose.scot
+.\Start-PowerPlatformReview.ps1            # asks for tenants (or shows the saved list from Start-PimAudit.ps1)
 .\Start-PowerPlatformReview.ps1 -All
 .\Start-PowerPlatformReview.ps1 -Tenant SE
 .\Start-PowerPlatformReview.ps1 -TenantId contoso.onmicrosoft.com -TenantShortName CON
@@ -41,28 +42,13 @@ if ($missing.Count) {
     foreach ($m in $missing) { Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber }
 }
 
-# Tenants (same list as Start-PimAudit.ps1)
+# Tenants: -TenantId on the command line, -Tenant/-All from the saved list (Config\audit-tenants.local.json,
+# shared with Start-PimAudit.ps1), or asked for here. Names and short names are worked out from each tenant.
 if (-not $TenantId) {
     $listPath = Join-Path $PSScriptRoot 'Config\audit-tenants.local.json'
-    if (-not (Test-Path $listPath)) {
-        # First run: build the tenant list (shared with Start-PimAudit.ps1) and save it for next time.
-        Write-Host "No tenant list yet. Enter the tenants to review; it is saved to $listPath (git-ignored)." -ForegroundColor Cyan
-        Write-Host 'Leave the tenant empty when you have finished.'
-        $newList = New-Object System.Collections.ArrayList
-        while ($true) {
-            $tid = Read-Host "Tenant $($newList.Count + 1) - tenant ID or domain (for example contoso.onmicrosoft.com)"
-            if ([string]::IsNullOrWhiteSpace($tid)) { break }
-            $name = Read-Host '  Name (for example Contoso)'
-            $short = Read-Host '  Short name for reports (for example CON)'
-            if ([string]::IsNullOrWhiteSpace($name)) { $name = $tid.Trim() }
-            if ([string]::IsNullOrWhiteSpace($short)) { $short = ($name -replace '[^A-Za-z0-9]', '') }
-            $null = $newList.Add([pscustomobject]@{ Name = $name.Trim(); ShortName = $short.Trim(); TenantId = $tid.Trim() })
-        }
-        if ($newList.Count -eq 0) { throw 'No tenants entered.' }
-        [pscustomobject]@{ _about = 'Tenants for Start-PimAudit.ps1 and Start-PowerPlatformReview.ps1. Local only (git-ignored).'; Tenants = @($newList) } | ConvertTo-Json -Depth 5 | Out-File -FilePath $listPath -Encoding UTF8
-        Write-Host "Saved $($newList.Count) tenant(s)." -ForegroundColor Green
-    }
-    $list = @((Get-Content $listPath -Raw | ConvertFrom-Json).Tenants | Where-Object { $_.TenantId -and $_.TenantId -notmatch '^<' })
+    $list = @()
+    if (Test-Path $listPath) { $list = @((Get-Content $listPath -Raw | ConvertFrom-Json).Tenants | Where-Object { $_.TenantId -and $_.TenantId -notmatch '^<' }) }
+    if (($Tenant -or $All) -and $list.Count -eq 0) { throw "-Tenant and -All need a tenant list at $listPath. Pass -TenantId instead." }
     $picked = @()
     if ($All) { $picked = $list }
     elseif ($Tenant) {
@@ -72,14 +58,20 @@ if (-not $TenantId) {
             $picked += $hit[0]
         }
     }
-    else {
+    elseif ($list.Count -gt 0) {
         for ($i = 0; $i -lt $list.Count; $i++) { Write-Host ("  {0}. {1} ({2})" -f ($i + 1), $list[$i].Name, $list[$i].ShortName) }
         $choice = Read-Host 'Which to review? Numbers separated by commas, A for all'
         if ($choice -match '^(?i)a') { $picked = $list }
         else { foreach ($n in ($choice -split '[,\s]+' | Where-Object { $_ -match '^\d+$' })) { $picked += $list[[int]$n - 1] } }
     }
-    $TenantId = @($picked | ForEach-Object { [string]$_.TenantId })
-    $TenantShortName = @($picked | ForEach-Object { [string]$_.ShortName })
+    if ($picked.Count -gt 0) {
+        $TenantId = @($picked | ForEach-Object { [string]$_.TenantId })
+        $TenantShortName = @($picked | ForEach-Object { [string]$_.ShortName })
+    }
+    else {
+        $answer = Read-Host 'Tenants to review: tenant IDs or domains, separated by commas (for example sds.co.uk, scotent.co.uk)'
+        $TenantId = @($answer -split '[,;\s]+' | Where-Object { $_ })
+    }
 }
 if (-not $TenantId) { throw 'No tenant given.' }
 if (-not $OutputFolder) { $OutputFolder = Join-Path $PSScriptRoot 'Output' }

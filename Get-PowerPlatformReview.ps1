@@ -259,7 +259,14 @@ Connect-MgGraph @mgParams
 $orgInfo = (Invoke-GraphRequestWithRetry -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName').value | Select-Object -First 1
 $script:TenantGuid = $orgInfo.id
 $tenantName = $orgInfo.displayName
-if (-not $TenantShortName) { $TenantShortName = ($tenantName -replace '[^A-Za-z0-9]', '') }
+if (-not $TenantShortName) {
+    # Initials of the tenant name, ignoring "and"/"&": Skills Development Scotland -> SDS,
+    # Highlands and Islands Enterprise -> HIE, South of Scotland Enterprise -> SOSE.
+    $words = @($tenantName -split '[^A-Za-z0-9]+' | Where-Object { $_ -and $_ -notmatch '^(?i)(and|ltd|limited|plc)$' })
+    $TenantShortName = (($words | ForEach-Object { $_.Substring(0, 1) }) -join '').ToUpperInvariant()
+    if ($TenantShortName.Length -lt 2) { $TenantShortName = ($tenantName -replace '[^A-Za-z0-9]', '') }
+    Write-Host "Tenant: $tenantName ($TenantShortName)"
+}
 
 Write-Host 'Step 2 of 2: sign in to Azure (used only to get Power Platform tokens).'
 try { $null = Update-AzConfig -LoginExperienceV2 Off -Scope Process -ErrorAction Stop -WarningAction SilentlyContinue } catch { }
