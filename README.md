@@ -44,6 +44,39 @@ Options: `-SkipAzure` (Entra only), `-IncludeResourceLevelAccess` (also list acc
 
 Settings come from `Config/pim-review.config.local.json` when it exists (git-ignored), otherwise `Config/pim-review.config.json`; the tenant in the config is ignored in favour of `-TenantId`.
 
+## Power Platform admin review
+
+A separate run that covers Power Platform. It shows who holds the admin roles, who is System Administrator in each environment, and which flows could break when admin rights move to CLAD accounts. It works in Windows PowerShell 5.1 and PowerShell 7, and uses the same modules and tenant list as the PIM audit (Microsoft.Graph.Authentication, Az.Accounts).
+
+```powershell
+Run-PowerPlatformReview.cmd                 # double-click: menu of tenants from Config\audit-tenants.local.json
+.\Start-PowerPlatformReview.ps1 -All        # every tenant, plus the partnership roll-up
+.\Start-PowerPlatformReview.ps1 -Tenant SE
+.\Get-PowerPlatformReview.ps1 -TenantId contoso.onmicrosoft.com -TenantShortName CON   # one tenant
+```
+
+Before you run it, in each tenant:
+- Sign in with Global Reader for the Graph reads.
+- Activate **Power Platform Administrator** in PIM. Without it the run can only list environments, flows and apps; tenant roles are still reported.
+- For Dataverse role holders and flows, the account needs read access in each environment's Dataverse, for example System Administrator after self-elevation. Environments without that access are listed as a coverage gap (finding PP-14). The tool never elevates itself.
+
+You sign in twice per tenant: Microsoft Graph, then Azure. Azure is only used to get Power Platform and Dataverse tokens; no Azure subscription is needed.
+
+Output goes to `Output\<tenant>\PowerPlatform-<timestamp>\`:
+
+| File | Contents |
+|---|---|
+| `PowerPlatform_Review_<tenant>_<date>.html` | The report: at a glance, findings PP-01 to PP-14, who does what, flows at risk, environments |
+| `pp-people-register.csv` | One row per person, with tenant roles, environment roles, flows and apps owned, licence, persona and recommended action |
+| `pp-flows-at-risk.csv` | Flows whose owner holds admin rights or is disabled, rated High, Medium or Low |
+| `pp-findings.csv`, `pp-summary.json` | Findings and headline metrics; the roll-up reads `pp-summary.json` |
+| `pp-tenant-roles.csv` | Power Platform Admin, Dynamics 365 Admin, Global Admin, Fabric Admin and Business Central Admin, eligible and active, with groups expanded |
+| `pp-environments.csv`, `pp-environment-roles.csv` | Environments, and System Administrator, System Customizer and Environment Maker holders, direct and through teams |
+| `pp-flows.csv`, `pp-apps.csv` | Cloud flows and canvas apps with their owner and connectors |
+| `pp-users.csv`, `pp-dlp-policies.csv`, `pp-tenant-settings.json`, `pp-collection-log.csv` | Supporting evidence |
+
+CLAD accounts are recognised by `NamingCompliancePrefix` in the config. To re-run the assessment without reconnecting, use `.\Invoke-PowerPlatformAssessment.ps1 -RunFolder <folder>`. To rebuild the partnership view, use `.\Invoke-PowerPlatformRollup.ps1`.
+
 ## Folder Structure
 
 - `Modules/PimReview.Common.psm1`
