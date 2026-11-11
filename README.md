@@ -44,39 +44,56 @@ Options: `-SkipAzure` (Entra only), `-IncludeResourceLevelAccess` (also list acc
 
 Settings come from `Config/pim-review.config.local.json` when it exists (git-ignored), otherwise `Config/pim-review.config.json`; the tenant in the config is ignored in favour of `-TenantId`.
 
-## Power Platform admin review
+## Power Platform privileged access audit
 
-A separate run that covers Power Platform. It shows who holds the admin roles, who is System Administrator in each environment, and which flows could break when admin rights move to CLAD accounts. It works in Windows PowerShell 5.1 and PowerShell 7, and uses the same modules and tenant list as the PIM audit (Microsoft.Graph.Authentication, Az.Accounts).
+The Power Platform counterpart of the PIM audit, run the same way. It answers: who can administer Power Platform, from which accounts (everyday or CLAD), how that access is held (PIM or standing), which flows, apps and connections depend on it, and what changes or breaks when Power Platform admin moves to CLADs under PIM. Same Trust Level model, same control format (Good / Partial / Weak with why it matters, what good looks like and the action), same NCSC CAF B2 benchmark and same report style.
 
 ```powershell
-.\Start-PowerPlatformReview.ps1 -TenantId sds.co.uk, scotent.co.uk   # name the tenants; short names worked out (SDS, SE)
-Run-PowerPlatformReview.cmd                 # double-click: asks for tenants, or shows the saved list
-.\Start-PowerPlatformReview.ps1 -All        # every tenant, plus the partnership roll-up
-.\Start-PowerPlatformReview.ps1 -Tenant SE
-.\Get-PowerPlatformReview.ps1 -TenantId contoso.onmicrosoft.com -TenantShortName CON   # one tenant
+Run-PowerPlatformAudit.cmd                                   # double-click: menu from Config\audit-tenants.local.json
+.\Start-PowerPlatformAudit.ps1 -All                          # every tenant in the list, plus the partnership roll-up
+.\Start-PowerPlatformAudit.ps1 -Tenant SE, HIE
+.\Start-PowerPlatformAudit.ps1 -TenantId sds.co.uk, scotent.co.uk   # tenants not in the list; short names worked out (SDS, SE)
 ```
 
-Before you run it, in each tenant:
-- Sign in with Global Reader for the Graph reads.
-- Activate **Power Platform Administrator** in PIM. Without it the run can only list environments, flows and apps; tenant roles are still reported.
-- For Dataverse role holders and flows, the account needs read access in each environment's Dataverse, for example System Administrator after self-elevation. Environments without that access are listed as a coverage gap (finding PP-14). The tool never elevates itself.
+The tenant list is shared with `Start-PimAudit.ps1`; tenants given with `-TenantId` are added to it after a successful run. The start-up checks are the same (modules, optional ImportExcel for the workbook), and it asks once whether to elevate for Dataverse (below).
 
-You sign in twice per tenant: Microsoft Graph, then Azure. Azure is only used to get Power Platform and Dataverse tokens; no Azure subscription is needed.
+### Power Platform audit: permissions
 
-Output goes to `Output\<tenant>\PowerPlatform-<timestamp>\`:
+Use your CLAD in each tenant with:
 
-| File | Contents |
+| Need | Why |
 |---|---|
-| `PowerPlatform_Review_<tenant>_<date>.html` | The report: at a glance, findings PP-01 to PP-14, who does what, flows at risk, environments |
-| `pp-people-register.csv` | One row per person, with tenant roles, environment roles, flows and apps owned, licence, persona and recommended action |
-| `pp-flows-at-risk.csv` | Flows whose owner holds admin rights or is disabled, rated High, Medium or Low |
-| `pp-findings.csv`, `pp-summary.json` | Findings and headline metrics; the roll-up reads `pp-summary.json` |
-| `pp-tenant-roles.csv` | Power Platform Admin, Dynamics 365 Admin, Global Admin, Fabric Admin and Business Central Admin, eligible and active, with groups expanded |
-| `pp-environments.csv`, `pp-environment-roles.csv` | Environments, and System Administrator, System Customizer and Environment Maker holders, direct and through teams |
-| `pp-flows.csv`, `pp-apps.csv` | Cloud flows and canvas apps with their owner and connectors |
-| `pp-users.csv`, `pp-dlp-policies.csv`, `pp-tenant-settings.json`, `pp-collection-log.csv` | Supporting evidence |
+| **Global Reader** | Graph reads: roles, PIM settings and activations, Conditional Access, sign-in methods, licences |
+| **Power Platform Administrator, activated in PIM before the run** | The Power Platform admin APIs: environments, environment roles, flows, apps, connections, tenant settings, DLP, management apps. Without it the report only covers Entra. |
+| **Read access inside each Dataverse environment** | System Administrators, teams and auditing settings live inside Dataverse. Neither Power Platform Administrator nor Global Administrator gives this automatically. |
 
-CLAD accounts are recognised by `NamingCompliancePrefix` in the config. To re-run the assessment without reconnecting, use `.\Invoke-PowerPlatformAssessment.ps1 -RunFolder <folder>`. To rebuild the partnership view, use `.\Invoke-PowerPlatformRollup.ps1`.
+Global Administrator is **not** needed and gives no more than Power Platform Administrator here: it also has to self-elevate per environment. Use the lowest role that works.
+
+For Dataverse, choose at the start:
+- **Elevate where needed** (`-ElevateForAudit`): the audit self-elevates to System Administrator only in environments it cannot read, reads them, and removes the role again at the end of the run. Every elevation and removal is in `Raw\pp-elevations.csv` and Microsoft Purview logs each one. It is a change in those environments, so put it through change control if your process needs that. If removal fails the summary says so in red.
+- **No elevation** (`-NoElevation`): those environments are listed as a coverage gap (control PPE-07).
+
+The Graph consent adds `Policy.Read.All` and `UserAuthenticationMethod.Read.All` to the scopes the PIM audit already uses.
+
+### What it produces
+
+In `Output\<tenant>\PowerPlatform-<timestamp>\`:
+
+| File | Purpose |
+|---|---|
+| `PowerPlatform_Audit_<tenant>.html` | The report: at a glance, trust levels in Power Platform, what is working well, what needs attention, everyday and CLAD accounts, what changes and breaks with Power Platform admin in PIM, PIM coverage, flows and connections at risk, NCSC benchmark, environments |
+| `PowerPlatform_Audit_<tenant>.xlsx` | The workbook (when ImportExcel works on the device) |
+| `PP_People.csv` | Who does what: account type, linked CLAD or everyday account, trust level, roles and how held, production System Administrator, flows/apps/connections owned, licences, sign-in methods, Conditional Access coverage, persona, recommended action |
+| `PP_TrustLevels.csv` | Each kind of Power Platform access: what it can do, trust level, what it needs, what PIM changes |
+| `PP_PimImpact.csv` | Per admin: what changes, what breaks, what to do before the change |
+| `PP_CladProvisioning.csv` | Everyone doing Power Platform admin work from an everyday account: existing CLAD or proposed `clad_<surname><initial>` name, rights to move, rights to keep |
+| `PP_FlowsAtRisk.csv`, `PP_ConnectionsAtRisk.csv` | Flows and connections that depend on a person's admin rights, are owned by a CLAD, or whose owner has left |
+| `PP_AccessPaths.csv`, `PP_PimCoverage.csv`, `PP_PolicyGaps.csv` | Every route to admin rights; just-in-time vs permanent per role; PIM settings against the trust-level baseline |
+| `PP_MigrationWorksheet.csv` | One row per privileged route with the proposed action and blank Wave / Owner / Decision |
+| `PP_Controls.csv`, `PP_NcscCafBenchmark.csv`, `PP_Ssa.csv` | Control checks PPA/PPI/PPP/PPC/PPE/PPW/PPG and the indicative NCSC ratings |
+| `Raw\pp-*.csv`, `Raw\pp-collection-log.csv` | Evidence as collected, and anything that could not be read |
+
+Re-run the assessment without reconnecting: `.\Invoke-PowerPlatformAssessment.ps1 -RunFolder <folder>`. Rebuild the partnership view: `.\Invoke-PowerPlatformRollup.ps1`. Trust levels for Power Platform roles can be overridden in the catalogue (`EntraRoles`, or a `PowerPlatformRoles` section keyed by the names in `PP_TrustLevels.csv`).
 
 ## Folder Structure
 
